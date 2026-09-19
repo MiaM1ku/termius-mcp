@@ -65,6 +65,13 @@ class ProtocolTest(unittest.TestCase):
         finally:
             tmpdir.cleanup()
         self.assertEqual(first['result']['serverInfo']['version'], '3.0.0')
+        self.assertEqual(first['result']['serverInfo']['title'], 'Termius Cloud')
         names = [tool['name'] for tool in second['result']['tools']]
         self.assertIn('hosts', names)
         self.assertIn('login', names)
+        hosts = [
+            tool for tool in second['result']['tools']
+            if tool['name'] == 'hosts'
+        ][0]
+        self.assertEqual(hosts['title'], 'List Hosts')
+        self.assertTrue(hosts['description'])

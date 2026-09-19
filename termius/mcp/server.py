@@ -10,7 +10,7 @@ from ..runtime import Runtime
 from .protocol import ProtocolError, read_message, write_message
 from .tools import TOOLS, ToolError, call_tool
 
-PROTOCOL_VERSION = '2024-11-05'
+PROTOCOL_VERSION = '2025-06-18'
 LOGGER = logging.getLogger(__name__)
 
 INSTRUCTIONS = (
@@ -43,8 +43,12 @@ def _error_result(message, code=None):
 def _initialize_result():
     return {
         'protocolVersion': PROTOCOL_VERSION,
-        'capabilities': {'tools': {}},
-        'serverInfo': {'name': 'termius', 'version': __version__},
+        'capabilities': {'tools': {'listChanged': False}},
+        'serverInfo': {
+            'name': 'termius',
+            'title': 'Termius Cloud',
+            'version': __version__,
+        },
         'instructions': INSTRUCTIONS,
     }
 

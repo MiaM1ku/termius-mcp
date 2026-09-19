@@ -241,7 +241,13 @@ class ToolsTest(unittest.TestCase):
         self.assertEqual(
             response['result']['serverInfo']['name'], 'termius'
         )
+        self.assertEqual(
+            response['result']['serverInfo']['title'], 'Termius Cloud'
+        )
         self.assertEqual(response['result']['serverInfo']['version'], '3.0.0')
+        self.assertEqual(
+            response['result']['protocolVersion'], '2025-06-18'
+        )
 
     def test_tools_list_has_ten(self):
         response = handle_rpc(self.runtime, {
@@ -249,7 +255,8 @@ class ToolsTest(unittest.TestCase):
             'id': 2,
             'method': 'tools/list',
         })
-        names = [tool['name'] for tool in response['result']['tools']]
+        tools = response['result']['tools']
+        names = [tool['name'] for tool in tools]
         self.assertEqual(
             names,
             [
@@ -257,3 +264,8 @@ class ToolsTest(unittest.TestCase):
                 'hosts', 'host', 'exec', 'files', 'inventory',
             ],
         )
+        for tool in tools:
+            self.assertTrue(tool.get('title'), tool['name'])
+            self.assertTrue(tool.get('description'), tool['name'])
+            self.assertEqual(tool['inputSchema']['type'], 'object')
+            self.assertEqual(tool['annotations']['title'], tool['title'])

@@ -27,190 +27,228 @@ class ToolError(Exception):
         self.code = code
 
 
+def _input_schema(properties=None, required=None):
+    """JSON Schema object for an MCP tool (spec: type must be object)."""
+    schema = {'type': 'object', 'properties': properties or {}}
+    if required:
+        schema['required'] = required
+    if not properties:
+        schema['additionalProperties'] = False
+    return schema
+
+
+def _tool(name, title, description, schema, hints):
+    """One MCP Tool: name, title, description, inputSchema, annotations.
+
+    Clients display title, then annotations.title, then name. description is
+    the model-facing hint. See modelcontextprotocol tools schema.
+    """
+    annotations = {'title': title}
+    annotations.update(hints)
+    return {
+        'name': name,
+        'title': title,
+        'description': description,
+        'inputSchema': schema,
+        'annotations': annotations,
+    }
+
+
+_READ = {'readOnlyHint': True, 'openWorldHint': True}
+_WRITE = {
+    'readOnlyHint': False,
+    'destructiveHint': False,
+    'idempotentHint': False,
+    'openWorldHint': True,
+}
+_DESTRUCTIVE = {
+    'readOnlyHint': False,
+    'destructiveHint': True,
+    'idempotentHint': False,
+    'openWorldHint': True,
+}
+
+
 TOOLS = [
-    {
-        'name': 'status',
-        'description': (
+    _tool(
+        'status',
+        'Termius Status',
+        (
             'Show Termius login state, last cloud sync time, whether the '
             'local vault cache is stale, whether the vault password is '
             'remembered, and inventory counts. Does not sync. Call this '
             'first when you do not know if the user is signed in.'
         ),
-        'inputSchema': {'type': 'object', 'properties': {}},
-    },
-    {
-        'name': 'login',
-        'description': (
+        _input_schema(),
+        _READ,
+    ),
+    _tool(
+        'login',
+        'Sign In to Termius',
+        (
             'Sign in to Termius Cloud. method=email needs username and '
             'password (the vault encryption password). method=google returns '
             'a URL; after the user pastes termius://app/continue-sso?... '
             'call login_complete. Does not pull inventory; hosts/exec will '
             'auto-sync after a password is remembered.'
         ),
-        'inputSchema': {
-            'type': 'object',
-            'properties': {
-                'method': {
-                    'type': 'string',
-                    'enum': ['email', 'google'],
-                    'description': 'email or google (default email)',
-                },
-                'username': {
-                    'type': 'string',
-                    'description': 'Termius email (email method)',
-                },
-                'password': {
-                    'type': 'string',
-                    'description': 'Vault / account password (email method)',
-                },
-                'otp': {
-                    'type': 'string',
-                    'description': 'Authenticator / Authy code if 2FA is on',
-                },
-                'remember': {
-                    'type': 'boolean',
-                    'description': (
-                        'Store the vault password in ~/.termius/vault '
-                        '(mode 0600). Default true.'
-                    ),
-                },
+        _input_schema({
+            'method': {
+                'type': 'string',
+                'enum': ['email', 'google'],
+                'description': 'email or google (default email)',
             },
-        },
-    },
-    {
-        'name': 'login_complete',
-        'description': (
+            'username': {
+                'type': 'string',
+                'description': 'Termius email (email method)',
+            },
+            'password': {
+                'type': 'string',
+                'description': 'Vault / account password (email method)',
+            },
+            'otp': {
+                'type': 'string',
+                'description': 'Authenticator / Authy code if 2FA is on',
+            },
+            'remember': {
+                'type': 'boolean',
+                'description': (
+                    'Store the vault password in ~/.termius/vault '
+                    '(mode 0600). Default true.'
+                ),
+            },
+        }),
+        _WRITE,
+    ),
+    _tool(
+        'login_complete',
+        'Finish Google Sign-In',
+        (
             'Finish Google SSO. Pass the termius:// callback from login '
             'and the vault encryption password (not the Google password).'
         ),
-        'inputSchema': {
-            'type': 'object',
-            'properties': {
-                'callback_url': {
-                    'type': 'string',
-                    'description': 'termius://app/continue-sso?... URL',
-                },
-                'password': {
-                    'type': 'string',
-                    'description': 'Termius vault encryption password',
-                },
-                'otp': {
-                    'type': 'string',
-                    'description': 'Authenticator / Authy code if 2FA is on',
-                },
-                'remember': {
-                    'type': 'boolean',
-                    'description': (
-                        'Store the vault password in ~/.termius/vault. '
-                        'Default true.'
-                    ),
-                },
+        _input_schema({
+            'callback_url': {
+                'type': 'string',
+                'description': 'termius://app/continue-sso?... URL',
             },
-            'required': ['callback_url', 'password'],
-        },
-    },
-    {
-        'name': 'logout',
-        'description': (
+            'password': {
+                'type': 'string',
+                'description': 'Termius vault encryption password',
+            },
+            'otp': {
+                'type': 'string',
+                'description': 'Authenticator / Authy code if 2FA is on',
+            },
+            'remember': {
+                'type': 'boolean',
+                'description': (
+                    'Store the vault password in ~/.termius/vault. '
+                    'Default true.'
+                ),
+            },
+        }, ['callback_url', 'password']),
+        _WRITE,
+    ),
+    _tool(
+        'logout',
+        'Sign Out of Termius',
+        (
             'Sign out, delete the remembered vault password, and wipe the '
             'local inventory.'
         ),
-        'inputSchema': {'type': 'object', 'properties': {}},
-    },
-    {
-        'name': 'sync',
-        'description': (
+        _input_schema(),
+        _DESTRUCTIVE,
+    ),
+    _tool(
+        'sync',
+        'Sync Termius Vault',
+        (
             'Force a pull from Termius Cloud now. Password comes from the '
             'password argument, TERMIUS_VAULT_PASSWORD, or ~/.termius/vault. '
             'Use this when status.stale is true and auto-sync failed, or '
             'when you just changed hosts in the Termius app.'
         ),
-        'inputSchema': {
-            'type': 'object',
-            'properties': {
-                'password': {
-                    'type': 'string',
-                    'description': 'Vault password if it is not remembered',
-                },
-                'remember': {
-                    'type': 'boolean',
-                    'description': (
-                        'Store password in ~/.termius/vault when supplied. '
-                        'Default true.'
-                    ),
-                },
+        _input_schema({
+            'password': {
+                'type': 'string',
+                'description': 'Vault password if it is not remembered',
             },
-        },
-    },
-    {
-        'name': 'hosts',
-        'description': (
+            'remember': {
+                'type': 'boolean',
+                'description': (
+                    'Store password in ~/.termius/vault when supplied. '
+                    'Default true.'
+                ),
+            },
+        }),
+        _WRITE,
+    ),
+    _tool(
+        'hosts',
+        'List Hosts',
+        (
             'List Termius hosts (id, label, address, group, username). '
             'Auto-pulls a stale vault first. Filter with query against '
             'label, address, group, or username. Use host for full SSH '
             'settings. Use exec to run a command. Use files for SFTP.'
         ),
-        'inputSchema': {
-            'type': 'object',
-            'properties': {
-                'query': {
-                    'type': 'string',
-                    'description': (
-                        'Optional case-insensitive substring on label, '
-                        'address, group, or username'
-                    ),
-                },
+        _input_schema({
+            'query': {
+                'type': 'string',
+                'description': (
+                    'Optional case-insensitive substring on label, '
+                    'address, group, or username'
+                ),
             },
-        },
-    },
-    {
-        'name': 'host',
-        'description': (
+        }),
+        _READ,
+    ),
+    _tool(
+        'host',
+        'Host Details',
+        (
             'One host plus merged SSH settings and a generated ssh(1) '
             'command. Auto-pulls a stale vault first. name is id or label. '
             'Does not return passwords or private keys.'
         ),
-        'inputSchema': {
-            'type': 'object',
-            'properties': {
-                'name': {
-                    'type': 'string',
-                    'description': 'Host numeric id or exact label',
-                },
+        _input_schema({
+            'name': {
+                'type': 'string',
+                'description': 'Host numeric id or exact label',
             },
-            'required': ['name'],
-        },
-    },
-    {
-        'name': 'exec',
-        'description': (
+        }, ['name']),
+        _READ,
+    ),
+    _tool(
+        'exec',
+        'Run SSH Command',
+        (
             'Run a shell command on a Termius host over SSH. Uses the '
             'username, password, or key from the vault. Auto-pulls a stale '
             'vault first. Returns stdout, stderr, and exit_code. Never echo '
             'secrets from the output unless the user asked for that command.'
         ),
-        'inputSchema': {
-            'type': 'object',
-            'properties': {
-                'name': {
-                    'type': 'string',
-                    'description': 'Host numeric id or exact label',
-                },
-                'command': {
-                    'type': 'string',
-                    'description': 'Remote shell command',
-                },
-                'timeout': {
-                    'type': 'integer',
-                    'description': 'Seconds to wait (default 60)',
-                },
+        _input_schema({
+            'name': {
+                'type': 'string',
+                'description': 'Host numeric id or exact label',
             },
-            'required': ['name', 'command'],
-        },
-    },
-    {
-        'name': 'files',
-        'description': (
+            'command': {
+                'type': 'string',
+                'description': 'Remote shell command',
+            },
+            'timeout': {
+                'type': 'integer',
+                'description': 'Seconds to wait (default 60)',
+            },
+        }, ['name', 'command']),
+        _DESTRUCTIVE,
+    ),
+    _tool(
+        'files',
+        'SFTP Files',
+        (
             'Manage files on a Termius host over SFTP. Uses the username, '
             'password, or key from the vault. Auto-pulls a stale vault '
             'first. action=list lists a directory; stat shows one path; '
@@ -223,77 +261,72 @@ TOOLS = [
             'over exec for copy and edit. Never echo secrets from file '
             'content unless the user asked.'
         ),
-        'inputSchema': {
-            'type': 'object',
-            'properties': {
-                'name': {
-                    'type': 'string',
-                    'description': 'Host numeric id or exact label',
-                },
-                'action': {
-                    'type': 'string',
-                    'enum': list(FILE_ACTIONS),
-                    'description': 'SFTP operation',
-                },
-                'path': {
-                    'type': 'string',
-                    'description': (
-                        'Remote path. Default . (login directory) for list'
-                    ),
-                },
-                'local_path': {
-                    'type': 'string',
-                    'description': (
-                        'Path on the MCP host filesystem (get and put)'
-                    ),
-                },
-                'dest': {
-                    'type': 'string',
-                    'description': 'Destination remote path (rename)',
-                },
-                'content': {
-                    'type': 'string',
-                    'description': 'File text or base64 payload (write)',
-                },
-                'encoding': {
-                    'type': 'string',
-                    'enum': ['utf-8', 'base64'],
-                    'description': 'write payload encoding. Default utf-8',
-                },
-                'recursive': {
-                    'type': 'boolean',
-                    'description': (
-                        'mkdir/write/put create parents; rm deletes a tree. '
-                        'Default false'
-                    ),
-                },
-                'timeout': {
-                    'type': 'integer',
-                    'description': 'Seconds to wait (default 60)',
-                },
+        _input_schema({
+            'name': {
+                'type': 'string',
+                'description': 'Host numeric id or exact label',
             },
-            'required': ['name', 'action'],
-        },
-    },
-    {
-        'name': 'inventory',
-        'description': (
+            'action': {
+                'type': 'string',
+                'enum': list(FILE_ACTIONS),
+                'description': 'SFTP operation',
+            },
+            'path': {
+                'type': 'string',
+                'description': (
+                    'Remote path. Default . (login directory) for list'
+                ),
+            },
+            'local_path': {
+                'type': 'string',
+                'description': (
+                    'Path on the MCP host filesystem (get and put)'
+                ),
+            },
+            'dest': {
+                'type': 'string',
+                'description': 'Destination remote path (rename)',
+            },
+            'content': {
+                'type': 'string',
+                'description': 'File text or base64 payload (write)',
+            },
+            'encoding': {
+                'type': 'string',
+                'enum': ['utf-8', 'base64'],
+                'description': 'write payload encoding. Default utf-8',
+            },
+            'recursive': {
+                'type': 'boolean',
+                'description': (
+                    'mkdir/write/put create parents; rm deletes a tree. '
+                    'Default false'
+                ),
+            },
+            'timeout': {
+                'type': 'integer',
+                'description': 'Seconds to wait (default 60)',
+            },
+        }, ['name', 'action']),
+        _DESTRUCTIVE,
+    ),
+    _tool(
+        'inventory',
+        'List Inventory',
+        (
             'List groups, identities, SSH keys, or snippets. Auto-pulls a '
             'stale vault first. Identities and keys omit secret material. '
             'Snippets include the script text.'
         ),
-        'inputSchema': {
-            'type': 'object',
-            'properties': {
-                'kind': {
-                    'type': 'string',
-                    'enum': ['groups', 'identities', 'keys', 'snippets'],
-                    'description': 'Which inventory set to list',
-                },
+        _input_schema({
+            'kind': {
+                'type': 'string',
+                'enum': ['groups', 'identities', 'keys', 'snippets'],
+                'description': 'Which inventory set to list',
             },
-            'required': ['kind'],
-        },
-    },
+        }, ['kind']),
+        _READ,
+    ),
 ]
 
 
