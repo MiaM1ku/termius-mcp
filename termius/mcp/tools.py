@@ -28,12 +28,15 @@ class ToolError(Exception):
 
 
 def _input_schema(properties=None, required=None):
-    """JSON Schema object for an MCP tool (spec: type must be object)."""
+    """JSON Schema object for an MCP tool (spec: type must be object).
+
+    Do not set additionalProperties:false. Harnesses inject extra fields
+    (OMP's intent `i`) and no-arg tools with a closed empty object are
+    dropped or rejected by several MCP schema converters.
+    """
     schema = {'type': 'object', 'properties': properties or {}}
     if required:
         schema['required'] = required
-    if not properties:
-        schema['additionalProperties'] = False
     return schema
 
 
@@ -41,7 +44,9 @@ def _tool(name, title, description, schema, hints):
     """One MCP Tool: name, title, description, inputSchema, annotations.
 
     Clients display title, then annotations.title, then name. description is
-    the model-facing hint. See modelcontextprotocol tools schema.
+    the model-facing hint. outputSchema is required once we return
+    structuredContent (MCP tools spec). Shapes vary per tool; object is
+    the honest common envelope.
     """
     annotations = {'title': title}
     annotations.update(hints)
@@ -50,6 +55,7 @@ def _tool(name, title, description, schema, hints):
         'title': title,
         'description': description,
         'inputSchema': schema,
+        'outputSchema': {'type': 'object'},
         'annotations': annotations,
     }
 

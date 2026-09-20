@@ -2,6 +2,7 @@
 """Stdio MCP server for Termius Cloud."""
 from __future__ import unicode_literals
 
+import json
 import logging
 import sys
 
@@ -10,7 +11,12 @@ from ..runtime import Runtime
 from .protocol import ProtocolError, read_message, write_message
 from .tools import TOOLS, ToolError, call_tool
 
-PROTOCOL_VERSION = '2025-06-18'
+# OMP and current Cursor speak 2025-11-25. Echo the client's version when we
+# implement that revision; otherwise advertise our latest. Always returning
+# 2025-06-18 made 2025-11-25-only clients eligible to disconnect after
+# initialize (MCP lifecycle: server MUST echo a version it supports).
+SUPPORTED_PROTOCOL_VERSIONS = ('2025-11-25', '2025-06-18')
+PROTOCOL_VERSION = '2025-11-25'
 LOGGER = logging.getLogger(__name__)
 
 INSTRUCTIONS = (
@@ -22,9 +28,16 @@ INSTRUCTIONS = (
 )
 
 
+def _json_text(data):
+    return json.dumps(data, default=str, separators=(',', ':'))
+
+
 def _ok(data, summary):
     return {
-        'content': [{'type': 'text', 'text': summary}],
+        'content': [
+            {'type': 'text', 'text': summary},
+            {'type': 'text', 'text': _json_text(data)},
+        ],
         'structuredContent': data,
     }
 
@@ -34,15 +47,27 @@ def _error_result(message, code=None):
     if code:
         payload['code'] = code
     return {
-        'content': [{'type': 'text', 'text': message}],
+        'content': [
+            {'type': 'text', 'text': message},
+            {'type': 'text', 'text': _json_text(payload)},
+        ],
         'structuredContent': payload,
         'isError': True,
     }
 
 
-def _initialize_result():
+def _negotiated_protocol_version(params):
+    requested = None
+    if isinstance(params, dict):
+        requested = params.get('protocolVersion')
+    if requested in SUPPORTED_PROTOCOL_VERSIONS:
+        return requested
+    return PROTOCOL_VERSION
+
+
+def _initialize_result(params=None):
     return {
-        'protocolVersion': PROTOCOL_VERSION,
+        'protocolVersion': _negotiated_protocol_version(params),
         'capabilities': {'tools': {'listChanged': False}},
         'serverInfo': {
             'name': 'termius',
@@ -59,7 +84,7 @@ def handle_rpc(runtime, message):
     message_id = message.get('id')
     params = message.get('params') or {}
     if method == 'initialize':
-        return _rpc_result(message_id, _initialize_result())
+        return _rpc_result(message_id, _initialize_result(params))
     if method == 'notifications/initialized':
         return None
     if method == 'tools/list':

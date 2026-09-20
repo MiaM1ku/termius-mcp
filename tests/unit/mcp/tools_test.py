@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import json
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -246,8 +247,40 @@ class ToolsTest(unittest.TestCase):
         )
         self.assertEqual(response['result']['serverInfo']['version'], '3.0.0')
         self.assertEqual(
-            response['result']['protocolVersion'], '2025-06-18'
+            response['result']['protocolVersion'], '2025-11-25'
         )
+
+    def test_initialize_echoes_client_protocol_version(self):
+        for version in ('2025-11-25', '2025-06-18'):
+            response = handle_rpc(self.runtime, {
+                'jsonrpc': '2.0',
+                'id': 1,
+                'method': 'initialize',
+                'params': {'protocolVersion': version},
+            })
+            self.assertEqual(response['result']['protocolVersion'], version)
+
+    def test_status_ignores_harness_intent_field(self):
+        data, summary = call_tool(
+            self.runtime, 'status', {'i': 'check login state'},
+        )
+        self.assertFalse(data['logged_in'])
+        self.assertIn('Not signed in', summary)
+
+    def test_status_result_includes_structured_json_text(self):
+        response = handle_rpc(self.runtime, {
+            'jsonrpc': '2.0',
+            'id': 3,
+            'method': 'tools/call',
+            'params': {'name': 'status', 'arguments': {}},
+        })
+        result = response['result']
+        texts = [block['text'] for block in result['content']]
+        self.assertEqual(len(texts), 2)
+        self.assertIn('Not signed in', texts[0])
+        parsed = json.loads(texts[1])
+        self.assertEqual(parsed, result['structuredContent'])
+        self.assertFalse(parsed['logged_in'])
 
     def test_tools_list_has_ten(self):
         response = handle_rpc(self.runtime, {
@@ -268,4 +301,6 @@ class ToolsTest(unittest.TestCase):
             self.assertTrue(tool.get('title'), tool['name'])
             self.assertTrue(tool.get('description'), tool['name'])
             self.assertEqual(tool['inputSchema']['type'], 'object')
+            self.assertNotIn('additionalProperties', tool['inputSchema'])
+            self.assertEqual(tool['outputSchema'], {'type': 'object'})
             self.assertEqual(tool['annotations']['title'], tool['title'])
