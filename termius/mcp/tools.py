@@ -230,7 +230,9 @@ TOOLS = [
         'exec',
         'Run SSH Command',
         (
-            'Run a shell command on a Termius host over SSH. Uses the '
+            'Run a shell command on a Termius host over SSH. Required: '
+            'name (host numeric id or exact label from hosts) and '
+            'command; optional timeout in seconds. Uses the '
             'username, password, or key from the vault. Auto-pulls a stale '
             'vault first. Returns stdout, stderr, and exit_code. Never echo '
             'secrets from the output unless the user asked for that command.'
@@ -255,7 +257,11 @@ TOOLS = [
         'files',
         'SFTP Files',
         (
-            'Manage files on a Termius host over SFTP. Uses the username, '
+            'Manage files on a Termius host over SFTP. Required: name '
+            '(host numeric id or exact label from hosts) and action; '
+            'path is required for every action except list (defaults '
+            'to .). '
+            'Uses the username, '
             'password, or key from the vault. Auto-pulls a stale vault '
             'first. action=list lists a directory; stat shows one path; '
             'read returns file content (utf-8 or base64, max 200000 '
