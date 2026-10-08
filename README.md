@@ -92,7 +92,7 @@ Optional environment variables:
 | Variable | Purpose |
 | --- | --- |
 | `TERMIUS_VAULT_PASSWORD` | Vault encryption password (preferred over the remember file) |
-| `TERMIUS_SYNC_TTL` | Seconds before the next automatic pull. Default `60`. `0` pulls on every read. |
+| `TERMIUS_SYNC_TTL` | Seconds before an automatic pull in `exec`, `files`, and `inventory`. Default `60`. `0` pulls on every read. `hosts` and `host` always pull. |
 
 ## First-time setup
 
@@ -194,8 +194,8 @@ If a previous login already stored a DeviceToken:
 2. Call `sync` with the **vault encryption password** from the Termius app
    (not the Google password). Default `remember=true` stores it in the OS
    keychain.
-3. Call `hosts`. Later reads auto-pull when the cache is older than
-   `TERMIUS_SYNC_TTL`.
+3. Call `hosts`. It pulls Termius Cloud on every call, so the list is
+   always current.
 
 If this machine has never signed in and you are not using `termius login`:
 
@@ -220,15 +220,16 @@ Call `status` first.
 | `login` | `method=email` with username + password, or `method=google` to get an SSO URL |
 | `login_complete` | Finish Google SSO with `callback_url` + vault password |
 | `logout` | Clear the session, remembered password, and local inventory |
-| `sync` | Force a cloud pull now |
-| `hosts` | List hosts (optional `query`) |
-| `host` | One host + merged SSH settings + `ssh_command` |
+| `sync` | Force a pull now; also how you pass and remember the vault password |
+| `hosts` | List hosts (optional `query`). Pulls on every call |
+| `host` | One host + merged SSH settings + `ssh_command`. Pulls on every call |
 | `exec` | Run a remote command over SSH |
 | `files` | SFTP list / stat / read / write / get / put / mkdir / rm / rename |
 | `inventory` | `kind=groups\|identities\|keys\|snippets` |
 
-`hosts`, `host`, `exec`, `files`, and `inventory` pull automatically when the
-local cache is older than `TERMIUS_SYNC_TTL` and a vault password is available.
+`hosts` and `host` pull on every call, so they never show a stale list.
+`exec`, `files`, and `inventory` pull when the local cache is older than
+`TERMIUS_SYNC_TTL` and a vault password is available.
 
 `files` uses SFTP on the same SSH credentials as `exec`. `get` and `put` copy
 between the MCP host filesystem and the remote host. `read` and `write` move

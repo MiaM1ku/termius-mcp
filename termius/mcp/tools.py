@@ -195,9 +195,10 @@ TOOLS = [
         'List Hosts',
         (
             'List Termius hosts (id, label, address, group, username). '
-            'Auto-pulls a stale vault first. Filter with query against '
-            'label, address, group, or username. Use host for full SSH '
-            'settings. Use exec to run a command. Use files for SFTP.'
+            'Pulls Termius Cloud on every call, so the list is current. '
+            'Filter with query against label, address, group, or username. '
+            'Use host for full SSH settings. Use exec to run a command. '
+            'Use files for SFTP.'
         ),
         _input_schema({
             'query': {
@@ -215,8 +216,8 @@ TOOLS = [
         'Host Details',
         (
             'One host plus merged SSH settings and a generated ssh(1) '
-            'command. Auto-pulls a stale vault first. name is id or label. '
-            'Does not return passwords or private keys.'
+            'command. Pulls Termius Cloud on every call. name is id or '
+            'label. Does not return passwords or private keys.'
         ),
         _input_schema({
             'name': {
@@ -234,7 +235,8 @@ TOOLS = [
             'name (host numeric id or exact label from hosts) and '
             'command; optional timeout in seconds. Uses the '
             'username, password, or key from the vault. Auto-pulls a stale '
-            'vault first. Returns stdout, stderr, and exit_code. Never echo '
+            'vault first (TERMIUS_SYNC_TTL). Returns stdout, stderr, and '
+            'exit_code. Never echo '
             'secrets from the output unless the user asked for that command.'
         ),
         _input_schema({
@@ -263,7 +265,8 @@ TOOLS = [
             'to .). '
             'Uses the username, '
             'password, or key from the vault. Auto-pulls a stale vault '
-            'first. action=list lists a directory; stat shows one path; '
+            'first (TERMIUS_SYNC_TTL). action=list lists a directory; stat '
+            'shows one path; '
             'read returns file content (utf-8 or base64, max 200000 '
             'bytes); write uploads content; get copies remote -> '
             'local_path on this machine; put copies local_path -> remote; '
@@ -327,8 +330,8 @@ TOOLS = [
         'List Inventory',
         (
             'List groups, identities, SSH keys, or snippets. Auto-pulls a '
-            'stale vault first. Identities and keys omit secret material. '
-            'Snippets include the script text.'
+            'stale vault first (TERMIUS_SYNC_TTL). Identities and keys omit '
+            'secret material. Snippets include the script text.'
         ),
         _input_schema({
             'kind': {
@@ -342,6 +345,11 @@ TOOLS = [
 ]
 
 
+# hosts and host report live inventory, so they pull on every call instead
+# of trusting a cache inside TERMIUS_SYNC_TTL.
+ALWAYS_PULL_TTL = 0
+
+
 def _bool_arg(arguments, key, default=True):
     if key not in arguments or arguments.get(key) is None:
         return default
@@ -353,9 +361,9 @@ def _bool_arg(arguments, key, default=True):
     return bool(value)
 
 
-def _auto_sync(runtime):
+def _auto_sync(runtime, ttl=None):
     try:
-        return ensure_fresh(runtime)
+        return ensure_fresh(runtime, ttl=ttl)
     except NotSignedIn as exc:
         raise ToolError(str(exc), code='not_signed_in')
     except VaultPasswordRequired as exc:
@@ -479,7 +487,7 @@ def handle_sync(runtime, arguments):
 
 
 def handle_hosts(runtime, arguments):
-    _auto_sync(runtime)
+    _auto_sync(runtime, ttl=ALWAYS_PULL_TTL)
     query = arguments.get('query') or ''
     rows = []
     for host in runtime.storage.get_all(Host):
@@ -491,7 +499,7 @@ def handle_hosts(runtime, arguments):
 
 
 def handle_host(runtime, arguments):
-    _auto_sync(runtime)
+    _auto_sync(runtime, ttl=ALWAYS_PULL_TTL)
     try:
         host = find_host(runtime.storage, arguments.get('name'))
     except HostLookupError as exc:

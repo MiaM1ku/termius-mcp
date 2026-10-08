@@ -88,6 +88,17 @@ class EnsureFreshTest(unittest.TestCase):
         mocked.assert_called_once()
         self.assertTrue(result['pulled'])
 
+    def test_ttl_zero_pulls_even_when_fresh(self):
+        self._sign_in()
+        remember(self.runtime, 'secret')
+        fresh = datetime.now(timezone.utc).isoformat()
+        self.runtime.config.set('CloudSynchronization', 'last_synced', fresh)
+        self.runtime.config.write()
+        with patch('termius.sync.pull') as mocked:
+            result = ensure_fresh(self.runtime, ttl=0)
+        mocked.assert_called_once()
+        self.assertTrue(result['pulled'])
+
     def test_missing_last_synced_is_stale(self):
         self.assertTrue(is_stale(self.runtime.config))
 

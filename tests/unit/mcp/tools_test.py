@@ -54,6 +54,21 @@ class ToolsTest(unittest.TestCase):
             call_tool(self.runtime, 'hosts', {})
         self.assertEqual(caught.exception.code, 'vault_password_required')
 
+    def test_hosts_and_host_pull_on_every_call(self):
+        self._sign_in()
+        with patch('termius.mcp.tools.ensure_fresh', return_value={}) as sync:
+            call_tool(self.runtime, 'hosts', {})
+            with self.assertRaises(ToolError):
+                call_tool(self.runtime, 'host', {'name': 'missing'})
+        ttls = [call[1].get('ttl') for call in sync.call_args_list]
+        self.assertEqual(ttls, [0, 0])
+
+    def test_other_reads_keep_the_cache_ttl(self):
+        self._sign_in()
+        with patch('termius.mcp.tools.ensure_fresh', return_value={}) as sync:
+            call_tool(self.runtime, 'inventory', {'kind': 'groups'})
+        self.assertIsNone(sync.call_args[1].get('ttl'))
+
     def test_host_not_found(self):
         self._sign_in()
         with patch('termius.mcp.tools.ensure_fresh', return_value={}):

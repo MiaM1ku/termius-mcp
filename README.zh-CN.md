@@ -83,7 +83,7 @@ Pi / OMP（`~/.omp/agent/mcp.json`）：
 | 变量 | 用途 |
 | --- | --- |
 | `TERMIUS_VAULT_PASSWORD` | 保险库加密密码（优先于记住文件） |
-| `TERMIUS_SYNC_TTL` | 下次自动拉取前的秒数。默认 `60`。`0` 表示每次读取都拉取。 |
+| `TERMIUS_SYNC_TTL` | `exec`、`files`、`inventory` 下次自动拉取前的秒数。默认 `60`。`0` 表示每次读取都拉取。`hosts` 和 `host` 每次都拉。 |
 
 ## 首次设置
 
@@ -173,7 +173,7 @@ termius logout
 
 1. 调用 `status`。预期 `logged_in: true`，并且经常是 `vault_remembered: false`。
 2. 调用 `sync`，并传入 Termius 应用中的**保险库加密密码**（不是 Google 密码）。默认 `remember=true` 会把密码存入系统钥匙串。
-3. 调用 `hosts`。之后的读取会在缓存早于 `TERMIUS_SYNC_TTL` 时自动拉取。
+3. 调用 `hosts`。它每次调用都会拉取云端，所以列表总是最新的。
 
 如果这台机器从未登录，并且你不使用 `termius login`：
 
@@ -194,14 +194,14 @@ termius logout
 | `login` | `method=email` 需要用户名和密码，或 `method=google` 获取 SSO URL |
 | `login_complete` | 用 `callback_url` 和保险库密码完成 Google SSO |
 | `logout` | 清除会话、已记住的密码和本地清单 |
-| `sync` | 立即从云端强制拉取 |
-| `hosts` | 列出主机（可选 `query`） |
-| `host` | 一台主机 + 合并后的 SSH 设置 + `ssh_command` |
+| `sync` | 立即强制拉取，也是传入并记住保险库密码的入口 |
+| `hosts` | 列出主机（可选 `query`）。每次调用都拉取 |
+| `host` | 一台主机 + 合并后的 SSH 设置 + `ssh_command`。每次调用都拉取 |
 | `exec` | 通过 SSH 运行远程命令 |
 | `files` | SFTP list / stat / read / write / get / put / mkdir / rm / rename |
 | `inventory` | `kind=groups\|identities\|keys\|snippets` |
 
-当本地缓存早于 `TERMIUS_SYNC_TTL`，并且保险库密码可用时，`hosts`、`host`、`exec`、`files` 和 `inventory` 会自动拉取。
+`hosts` 和 `host` 每次调用都先拉取，所以不会看到过期的列表。`exec`、`files` 和 `inventory` 在本地缓存早于 `TERMIUS_SYNC_TTL` 时拉取，前提是保险库密码可用。
 
 `files` 使用与 `exec` 相同的 SSH 凭据，通过 SFTP 工作。`get` 和 `put` 在 MCP 主机文件系统与远程主机之间复制。`read` 和 `write` 通过工具结果传输文件内容（最大 200000 字节）。`get` 和 `put` 允许最大 50 MiB。`list` 默认把 `path` 设为 SSH 登录目录。
 
