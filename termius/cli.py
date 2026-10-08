@@ -76,7 +76,7 @@ def build_parser():
     login.add_argument(
         '--no-remember',
         action='store_true',
-        help='Do not store the vault password in the OS keychain',
+        help='Do not store the vault password in the secret store',
     )
     sub.add_parser(
         'logout',

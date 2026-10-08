@@ -93,6 +93,7 @@ Optional environment variables:
 | --- | --- |
 | `TERMIUS_VAULT_PASSWORD` | Vault encryption password (preferred over the remember file) |
 | `TERMIUS_SYNC_TTL` | Seconds before an automatic pull in `exec`, `files`, and `inventory`. Default `60`. `0` pulls on every read. `hosts` and `host` always pull. |
+| `TERMIUS_KEYRING` | `1` forces the OS keychain, `0` forces the local secrets file. Default: pick automatically. |
 
 ## First-time setup
 
@@ -169,7 +170,8 @@ The URL contains a Firebase ID token. The token expires after about one
 hour. Do not share the URL.
 
 `TERMIUS_VAULT_PASSWORD` supplies the vault password and skips the prompt.
-Default remember stores the vault password in the OS keychain. Pass
+Default remember stores the vault password in the secret store: the OS
+keychain, or `~/.termius/secrets` on a machine without one. Pass
 `--no-remember` to skip that.
 
 Check the session:
@@ -192,8 +194,8 @@ If a previous login already stored a DeviceToken:
 
 1. Call `status`. Expect `logged_in: true` and often `vault_remembered: false`.
 2. Call `sync` with the **vault encryption password** from the Termius app
-   (not the Google password). Default `remember=true` stores it in the OS
-   keychain.
+   (not the Google password). Default `remember=true` stores it in the
+   secret store.
 3. Call `hosts`. It pulls Termius Cloud on every call, so the list is
    always current.
 
@@ -238,10 +240,19 @@ up to 50 MiB. `list` defaults `path` to the SSH login directory.
 
 ## Local data
 
-Secrets live in the OS keychain through
+A desktop machine keeps secrets in the OS keychain through
 [`keyring`](https://pypi.org/project/keyring/): the macOS Keychain, the
 Windows Credential Manager, or the Linux Secret Service (GNOME Keyring,
-KWallet). Entries use the service name `termius-mcp:<directory>`:
+KWallet). Entries use the service name `termius-mcp:<directory>`.
+
+A machine with no usable keychain — a server, a container, a Linux box with
+no desktop session — keeps the same names in `~/.termius/secrets` instead:
+one Fernet token, mode `0600`, keyed on the machine and the user that wrote
+it. The file is unreadable text, and a copy of it is useless on another
+machine or account. It does not hide anything from somebody who is already
+this user on this machine. `TERMIUS_KEYRING=0` and `=1` pick a side by hand.
+
+Names in the store:
 
 - `vault_password` — remembered vault password, if you chose `remember`
 - `User.apikey` — DeviceToken
@@ -253,17 +264,20 @@ Files in `~/.termius/`:
 - `config` — username, salts, `last_synced`
 - `storage` — hosts, groups, identities, keys, snippets, encrypted with
   `storage_key` (Fernet), mode `0600`
+- `secrets` — only on a machine with no keychain, see above
 
 Private keys stay inside `storage`. `exec` and `files` load them in memory,
 so `ssh_command` from `host` has no `-i` option.
 
-On first start, plaintext data from older versions moves into the
-keychain: the `vault` file and the secrets in `config` are moved, `storage`
-is encrypted, and `ssh_keys/` is deleted.
+On first start, plaintext data from older versions moves into the secret
+store: the `vault` file and the secrets in `config` are moved, `storage` is
+encrypted, and `ssh_keys/` is deleted.
 
-Headless Linux without a Secret Service has no default backend. Run a
-Secret Service there, or set `PYTHON_KEYRING_BACKEND` to another `keyring`
-backend.
+The secrets file is bound to the machine and the user that wrote it. If
+`/etc/machine-id` changes (a reinstall or a cloned image) or the file moves
+to another host, the server stops with a message that says to delete
+`~/.termius/secrets` and sign in again. Losing it costs one cloud pull and
+one sign-in, not the vault itself.
 
 ## Encryption notes
 

@@ -8,13 +8,13 @@ LEGACY_VAULT_FILENAME = 'vault'
 
 
 class VaultPasswordRequired(Exception):
-    """No vault password in the environment or the keychain."""
+    """No vault password in the environment or the secret store."""
 
 
 def resolve(runtime):
     """Return the vault password or None.
 
-    Order: ``TERMIUS_VAULT_PASSWORD``, then the OS keychain.
+    Order: ``TERMIUS_VAULT_PASSWORD``, then the secret store.
     """
     env = os.environ.get(VAULT_ENV)
     if env:
@@ -34,7 +34,7 @@ def require(runtime):
 
 
 def remember(runtime, password):
-    """Store the password in the OS keychain."""
+    """Store the password in the secret store."""
     if not password:
         raise VaultPasswordRequired('Cannot remember an empty vault password')
     runtime.secrets.set(VAULT_SECRET, password)
@@ -46,12 +46,12 @@ def forget(runtime):
 
 
 def is_available(runtime):
-    """True when env or the keychain can supply a password."""
+    """True when env or the secret store can supply a password."""
     return resolve(runtime) is not None
 
 
 def migrate_legacy_file(runtime):
-    """Move the plaintext remember file of older versions to the keychain."""
+    """Move the plaintext remember file of older versions to the store."""
     path = runtime.directory_path / LEGACY_VAULT_FILENAME
     if not path.is_file():
         return

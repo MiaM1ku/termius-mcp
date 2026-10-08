@@ -119,8 +119,9 @@ TOOLS = [
             'remember': {
                 'type': 'boolean',
                 'description': (
-                    'Store the vault password in the OS keychain. '
-                    'Default true.'
+                    'Remember the vault password in the secret store '
+                    '(OS keychain, or an encrypted local file when the '
+                    'machine has no keychain). Default true.'
                 ),
             },
         }),
@@ -149,8 +150,9 @@ TOOLS = [
             'remember': {
                 'type': 'boolean',
                 'description': (
-                    'Store the vault password in the OS keychain. '
-                    'Default true.'
+                    'Remember the vault password in the secret store '
+                    '(OS keychain, or an encrypted local file when the '
+                    'machine has no keychain). Default true.'
                 ),
             },
         }, ['callback_url', 'password']),
@@ -170,10 +172,11 @@ TOOLS = [
         'sync',
         'Sync Termius Vault',
         (
-            'Force a pull from Termius Cloud now. Password comes from the '
-            'password argument, TERMIUS_VAULT_PASSWORD, or the OS keychain. '
-            'Use this when status.stale is true and auto-sync failed, or '
-            'when you just changed hosts in the Termius app.'
+            'Force a pull from Termius Cloud now. hosts and host already '
+            'pull on every call; use this for exec, files, and inventory, '
+            'or to pass and remember the vault password. Password comes '
+            'from the password argument, TERMIUS_VAULT_PASSWORD, or the '
+            'secret store. Returns the new last_synced and the counts.'
         ),
         _input_schema({
             'password': {
@@ -183,7 +186,7 @@ TOOLS = [
             'remember': {
                 'type': 'boolean',
                 'description': (
-                    'Store password in the OS keychain when supplied. '
+                    'Remember the supplied password in the secret store. '
                     'Default true.'
                 ),
             },

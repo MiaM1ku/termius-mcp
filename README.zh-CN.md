@@ -84,6 +84,7 @@ Pi / OMP（`~/.omp/agent/mcp.json`）：
 | --- | --- |
 | `TERMIUS_VAULT_PASSWORD` | 保险库加密密码（优先于记住文件） |
 | `TERMIUS_SYNC_TTL` | `exec`、`files`、`inventory` 下次自动拉取前的秒数。默认 `60`。`0` 表示每次读取都拉取。`hosts` 和 `host` 每次都拉。 |
+| `TERMIUS_KEYRING` | `1` 强制用系统钥匙串，`0` 强制用本地机密文件。默认自动判断。 |
 
 ## 首次设置
 
@@ -151,7 +152,7 @@ Google：
 
 该 URL 包含 Firebase ID token，约一小时后过期。不要分享该 URL。
 
-`TERMIUS_VAULT_PASSWORD` 提供保险库密码，并跳过提示。默认记住会把密码存入系统钥匙串。传入 `--no-remember` 可跳过这一步。
+`TERMIUS_VAULT_PASSWORD` 提供保险库密码，并跳过提示。默认记住会把密码存进机密存储：系统钥匙串，或没有钥匙串的机器上的 `~/.termius/secrets`。传入 `--no-remember` 可跳过这一步。
 
 查看会话：
 
@@ -172,7 +173,7 @@ termius logout
 如果以前登录过，钥匙串中已经有 DeviceToken：
 
 1. 调用 `status`。预期 `logged_in: true`，并且经常是 `vault_remembered: false`。
-2. 调用 `sync`，并传入 Termius 应用中的**保险库加密密码**（不是 Google 密码）。默认 `remember=true` 会把密码存入系统钥匙串。
+2. 调用 `sync`，并传入 Termius 应用中的**保险库加密密码**（不是 Google 密码）。默认 `remember=true` 会把密码存进机密存储。
 3. 调用 `hosts`。它每次调用都会拉取云端，所以列表总是最新的。
 
 如果这台机器从未登录，并且你不使用 `termius login`：
@@ -207,7 +208,11 @@ termius logout
 
 ## 本地数据
 
-机密通过 [`keyring`](https://pypi.org/project/keyring/) 存入系统钥匙串：macOS 钥匙串、Windows 凭据管理器，或 Linux Secret Service（GNOME Keyring、KWallet）。条目的服务名为 `termius-mcp:<目录>`：
+桌面机器通过 [`keyring`](https://pypi.org/project/keyring/) 把机密存进系统钥匙串：macOS 钥匙串、Windows 凭据管理器，或 Linux Secret Service（GNOME Keyring、KWallet）。条目的服务名为 `termius-mcp:<目录>`。
+
+没有可用钥匙串的机器（服务器、容器、没有桌面会话的 Linux）把同样的名字存进 `~/.termius/secrets`：一个 Fernet 令牌，权限 `0600`，密钥由机器和写它的用户派生。这个文件不是可读文本，复制到别的机器或别的账号上也解不开。但它挡不住已经以这个用户身份登录这台机器的人。`TERMIUS_KEYRING=0` 和 `=1` 可以手动指定用哪一边。
+
+机密名：
 
 - `vault_password` — 已记住的保险库密码（如果你选择了 `remember`）
 - `User.apikey` — DeviceToken
@@ -218,12 +223,13 @@ termius logout
 
 - `config` — 用户名、salt、`last_synced`
 - `storage` — 主机、分组、身份、密钥、代码片段，用 `storage_key` 加密（Fernet），权限为 `0600`
+- `secrets` — 只在没有钥匙串的机器上出现，见上
 
 私钥只保存在 `storage` 中。`exec` 和 `files` 在内存中加载私钥，因此 `host` 返回的 `ssh_command` 不带 `-i` 选项。
 
-首次启动时，旧版本留下的明文数据会迁入钥匙串：移走 `vault` 文件和 `config` 中的机密，加密 `storage`，删除 `ssh_keys/`。
+首次启动时，旧版本留下的明文数据会迁入机密存储：移走 `vault` 文件和 `config` 中的机密，加密 `storage`，删除 `ssh_keys/`。
 
-没有 Secret Service 的无头 Linux 没有默认后端。请在该机器上运行 Secret Service，或把 `PYTHON_KEYRING_BACKEND` 设为其他 `keyring` 后端。
+机密文件绑定写它的机器和用户。如果 `/etc/machine-id` 变了（重装系统、克隆镜像），或者文件被搬到别的机器，服务器会直接停下，并提示你删掉 `~/.termius/secrets` 重新登录。丢的只是一次云端拉取和一次登录，保险库本身不受影响。
 
 ## 加密说明
 
