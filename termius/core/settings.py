@@ -6,7 +6,7 @@ from six.moves import configparser
 
 from .paths import directory_of
 
-# Options kept in the OS keychain instead of the config file.
+# Options kept in the secret store instead of the config file.
 SECRET_OPTIONS = frozenset((
     ('User', 'apikey'),
     ('User', 'private_key'),
@@ -24,7 +24,7 @@ class Config(object):
         """Create new config.
 
         ``app`` is a Runtime (or test double) with ``directory_path``.
-        ``secrets`` is a SecretStore for ``SECRET_OPTIONS``; without it
+        ``secrets`` is a secret store for ``SECRET_OPTIONS``; without it
         they stay in the config file.
         """
         assert self.paths, "It must have at least single config file's path."
@@ -38,14 +38,14 @@ class Config(object):
         self.app = app
         self.command = app
         self.secrets = secrets
-        self._move_secrets_to_keychain()
+        self._move_secrets_to_store()
 
     def _secret_name(self, section, option):
         if self.secrets is None or (section, option) not in SECRET_OPTIONS:
             return None
         return '{}.{}'.format(section, option)
 
-    def _move_secrets_to_keychain(self):
+    def _move_secrets_to_store(self):
         """Migrate plaintext secrets written by older versions."""
         moved = False
         for section, option in SECRET_OPTIONS:

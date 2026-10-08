@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 
+from termius import __version__
 from termius.mcp.protocol import (
     ProtocolError, encode_message, read_message, write_message,
 )
@@ -64,7 +65,7 @@ class ProtocolTest(unittest.TestCase):
             second = read_message(stdout)
         finally:
             tmpdir.cleanup()
-        self.assertEqual(first['result']['serverInfo']['version'], '3.0.0')
+        self.assertEqual(first['result']['serverInfo']['version'], __version__)
         self.assertEqual(first['result']['serverInfo']['title'], 'Termius Cloud')
         self.assertEqual(first['result']['protocolVersion'], '2025-11-25')
         names = [tool['name'] for tool in second['result']['tools']]

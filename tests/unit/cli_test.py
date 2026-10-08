@@ -221,6 +221,18 @@ class CliTest(unittest.TestCase):
         self.assertEqual(main([]), 0)
         stdio.assert_called_once()
 
+    def test_main_refuses_to_start_when_secrets_cannot_be_opened(self):
+        from termius.keychain import SecretStoreError
+        with patch(
+            'termius.mcp.server.Runtime',
+            side_effect=SecretStoreError('bound to the machine'),
+        ):
+            with patch('sys.stderr', self.stderr):
+                code = main([])
+        self.assertEqual(code, 1)
+        self.assertIn('bound to the machine', self.stderr.getvalue())
+        self.assertIn('termius:', self.stderr.getvalue())
+
     @patch('termius.cli.login_email')
     def test_main_login_dispatch(self, login_email):
         login_email.return_value = {'ok': True, 'username': 'you@example.com'}

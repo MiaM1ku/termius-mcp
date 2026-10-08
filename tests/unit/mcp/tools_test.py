@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from termius import __version__
 from termius.core.models.terminal import Host, Identity, SshConfig
 from termius.mcp.server import handle_rpc
 from termius.core.ssh_exec import SshExecError
@@ -53,6 +54,64 @@ class ToolsTest(unittest.TestCase):
         with self.assertRaises(ToolError) as caught:
             call_tool(self.runtime, 'hosts', {})
         self.assertEqual(caught.exception.code, 'vault_password_required')
+
+    def test_hosts_and_host_use_a_short_ttl(self):
+        from termius.mcp.tools import HOST_PULL_TTL
+        self._sign_in()
+        with patch('termius.mcp.tools.ensure_fresh', return_value={}) as sync:
+            call_tool(self.runtime, 'hosts', {})
+            with self.assertRaises(ToolError):
+                call_tool(self.runtime, 'host', {'name': 'missing'})
+        ttls = [call[1].get('ttl') for call in sync.call_args_list]
+        self.assertEqual(ttls, [HOST_PULL_TTL, HOST_PULL_TTL])
+        self.assertEqual(HOST_PULL_TTL, 600)
+
+    def test_hosts_serves_the_cache_when_the_pull_fails(self):
+        self._sign_in()
+        self._add_host()
+        with patch(
+            'termius.mcp.tools.ensure_fresh',
+            side_effect=RuntimeError('offline'),
+        ):
+            data, summary = call_tool(self.runtime, 'hosts', {})
+        self.assertTrue(data['stale'])
+        self.assertEqual(data['sync_error'], 'offline')
+        self.assertEqual(data['count'], 1)
+        self.assertIn('local cache', summary)
+
+    def test_host_serves_the_cache_when_the_pull_fails(self):
+        self._sign_in()
+        saved = self._add_host()
+        with patch(
+            'termius.mcp.tools.ensure_fresh',
+            side_effect=RuntimeError('offline'),
+        ):
+            data, summary = call_tool(
+                self.runtime, 'host', {'name': saved.id}
+            )
+        self.assertTrue(data['stale'])
+        self.assertEqual(data['address'], '10.0.0.1')
+        self.assertIn('local cache', summary)
+
+    def test_exec_still_fails_when_the_pull_fails(self):
+        self._sign_in()
+        saved = self._add_host()
+        with patch(
+            'termius.mcp.tools.ensure_fresh',
+            side_effect=RuntimeError('offline'),
+        ):
+            with self.assertRaises(ToolError) as caught:
+                call_tool(
+                    self.runtime, 'exec',
+                    {'name': saved.id, 'command': 'true'},
+                )
+        self.assertEqual(caught.exception.code, 'sync_failed')
+
+    def test_other_reads_keep_the_cache_ttl(self):
+        self._sign_in()
+        with patch('termius.mcp.tools.ensure_fresh', return_value={}) as sync:
+            call_tool(self.runtime, 'inventory', {'kind': 'groups'})
+        self.assertIsNone(sync.call_args[1].get('ttl'))
 
     def test_host_not_found(self):
         self._sign_in()
@@ -245,7 +304,7 @@ class ToolsTest(unittest.TestCase):
         self.assertEqual(
             response['result']['serverInfo']['title'], 'Termius Cloud'
         )
-        self.assertEqual(response['result']['serverInfo']['version'], '3.0.0')
+        self.assertEqual(response['result']['serverInfo']['version'], __version__)
         self.assertEqual(
             response['result']['protocolVersion'], '2025-11-25'
         )

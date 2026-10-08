@@ -140,11 +140,15 @@ def _count(runtime, name):
     return len(runtime.storage.get_all(models[name]))
 
 
-def ensure_fresh(runtime):
-    """Pull when signed in, a vault password exists, and the cache is stale."""
+def ensure_fresh(runtime, ttl=None):
+    """Pull when signed in, a vault password exists, and the cache is stale.
+
+    ``ttl`` replaces ``TERMIUS_SYNC_TTL`` for this call. ``hosts`` and
+    ``host`` pass 600, so a second call inside that window does not pull.
+    """
     require_signed_in(runtime.config)
     password = require_vault(runtime)
-    if is_stale(runtime.config):
+    if is_stale(runtime.config, ttl):
         pull(runtime, password)
         return {'pulled': True, 'last_synced': last_synced_raw(runtime.config)}
     return {'pulled': False, 'last_synced': last_synced_raw(runtime.config)}

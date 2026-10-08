@@ -2,6 +2,8 @@
 """MCP tool definitions and handlers."""
 from __future__ import unicode_literals
 
+import logging
+
 from ..account.managers import AccountManager
 from ..core.exceptions import ApiError, NotSignedIn
 from ..core.models.terminal import Group, Host, Identity, Snippet, SshKey
@@ -17,6 +19,9 @@ from ..sync import (
     ensure_fresh, inventory_counts, last_synced_raw, pull, status_payload,
 )
 from ..vault import VaultPasswordRequired, remember
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class ToolError(Exception):
@@ -119,8 +124,9 @@ TOOLS = [
             'remember': {
                 'type': 'boolean',
                 'description': (
-                    'Store the vault password in the OS keychain. '
-                    'Default true.'
+                    'Remember the vault password in the secret store '
+                    '(OS keychain, or an encrypted local file when the '
+                    'machine has no keychain). Default true.'
                 ),
             },
         }),
@@ -149,8 +155,9 @@ TOOLS = [
             'remember': {
                 'type': 'boolean',
                 'description': (
-                    'Store the vault password in the OS keychain. '
-                    'Default true.'
+                    'Remember the vault password in the secret store '
+                    '(OS keychain, or an encrypted local file when the '
+                    'machine has no keychain). Default true.'
                 ),
             },
         }, ['callback_url', 'password']),
@@ -170,10 +177,12 @@ TOOLS = [
         'sync',
         'Sync Termius Vault',
         (
-            'Force a pull from Termius Cloud now. Password comes from the '
-            'password argument, TERMIUS_VAULT_PASSWORD, or the OS keychain. '
-            'Use this when status.stale is true and auto-sync failed, or '
-            'when you just changed hosts in the Termius app.'
+            'Force a pull from Termius Cloud now. hosts and host pull '
+            'when their cache is older than 600 seconds. Use sync for '
+            'exec, files, and inventory, or to pass and remember the '
+            'vault password. Password comes '
+            'from the password argument, TERMIUS_VAULT_PASSWORD, or the '
+            'secret store. Returns the new last_synced and the counts.'
         ),
         _input_schema({
             'password': {
@@ -183,7 +192,7 @@ TOOLS = [
             'remember': {
                 'type': 'boolean',
                 'description': (
-                    'Store password in the OS keychain when supplied. '
+                    'Remember the supplied password in the secret store. '
                     'Default true.'
                 ),
             },
@@ -195,9 +204,11 @@ TOOLS = [
         'List Hosts',
         (
             'List Termius hosts (id, label, address, group, username). '
-            'Auto-pulls a stale vault first. Filter with query against '
-            'label, address, group, or username. Use host for full SSH '
-            'settings. Use exec to run a command. Use files for SFTP.'
+            'Pulls Termius Cloud when the local cache is older than 600 '
+            'seconds. If that pull fails, returns the local cache and sets '
+            'stale to true. Filter with query '
+            'against label, address, group, or username. Use host for full '
+            'SSH settings. Use exec to run a command. Use files for SFTP.'
         ),
         _input_schema({
             'query': {
@@ -215,8 +226,10 @@ TOOLS = [
         'Host Details',
         (
             'One host plus merged SSH settings and a generated ssh(1) '
-            'command. Auto-pulls a stale vault first. name is id or label. '
-            'Does not return passwords or private keys.'
+            'command. Pulls Termius Cloud when the local cache is older '
+            'than 600 seconds. If that pull fails, returns the local cache '
+            'and sets stale to true. name is id or '
+            'label. Does not return passwords or private keys.'
         ),
         _input_schema({
             'name': {
@@ -234,7 +247,8 @@ TOOLS = [
             'name (host numeric id or exact label from hosts) and '
             'command; optional timeout in seconds. Uses the '
             'username, password, or key from the vault. Auto-pulls a stale '
-            'vault first. Returns stdout, stderr, and exit_code. Never echo '
+            'vault first (TERMIUS_SYNC_TTL). Returns stdout, stderr, and '
+            'exit_code. Never echo '
             'secrets from the output unless the user asked for that command.'
         ),
         _input_schema({
@@ -263,7 +277,8 @@ TOOLS = [
             'to .). '
             'Uses the username, '
             'password, or key from the vault. Auto-pulls a stale vault '
-            'first. action=list lists a directory; stat shows one path; '
+            'first (TERMIUS_SYNC_TTL). action=list lists a directory; stat '
+            'shows one path; '
             'read returns file content (utf-8 or base64, max 200000 '
             'bytes); write uploads content; get copies remote -> '
             'local_path on this machine; put copies local_path -> remote; '
@@ -327,8 +342,8 @@ TOOLS = [
         'List Inventory',
         (
             'List groups, identities, SSH keys, or snippets. Auto-pulls a '
-            'stale vault first. Identities and keys omit secret material. '
-            'Snippets include the script text.'
+            'stale vault first (TERMIUS_SYNC_TTL). Identities and keys omit '
+            'secret material. Snippets include the script text.'
         ),
         _input_schema({
             'kind': {
@@ -342,6 +357,11 @@ TOOLS = [
 ]
 
 
+# hosts and host use a short TTL so two calls close together share one pull.
+# This is not TERMIUS_SYNC_TTL. A failed pull still returns the local cache.
+HOST_PULL_TTL = 600
+
+
 def _bool_arg(arguments, key, default=True):
     if key not in arguments or arguments.get(key) is None:
         return default
@@ -353,17 +373,37 @@ def _bool_arg(arguments, key, default=True):
     return bool(value)
 
 
-def _auto_sync(runtime):
+def _pull_failed(exc, allow_stale):
+    if not allow_stale:
+        raise ToolError(
+            'Cloud pull failed: {}'.format(exc), code='sync_failed'
+        )
+    LOGGER.warning('Cloud pull failed; serving the local cache: %s', exc)
+    return {'pulled': False, 'stale': True, 'sync_error': str(exc)}
+
+
+def _auto_sync(runtime, ttl=None, allow_stale=False):
     try:
-        return ensure_fresh(runtime)
+        result = ensure_fresh(runtime, ttl=ttl)
     except NotSignedIn as exc:
         raise ToolError(str(exc), code='not_signed_in')
     except VaultPasswordRequired as exc:
         raise ToolError(str(exc), code='vault_password_required')
-    except Exception as exc:
-        raise ToolError(
-            'Cloud pull failed: {}'.format(exc), code='sync_failed'
-        )
+    except Exception as exc:  # pylint: disable=broad-except
+        return _pull_failed(exc, allow_stale)
+    if not isinstance(result, dict):
+        result = {}
+    result = dict(result)
+    result['stale'] = False
+    return result
+
+
+def _apply_sync_state(data, sync):
+    """Mark a host payload when the pull failed and the cache was used."""
+    if sync.get('stale'):
+        data['stale'] = True
+        data['sync_error'] = sync.get('sync_error') or ''
+    return data
 
 
 def _host_row(runtime, host):
@@ -479,19 +519,25 @@ def handle_sync(runtime, arguments):
 
 
 def handle_hosts(runtime, arguments):
-    _auto_sync(runtime)
+    sync = _auto_sync(runtime, ttl=HOST_PULL_TTL, allow_stale=True)
     query = arguments.get('query') or ''
     rows = []
     for host in runtime.storage.get_all(Host):
         row = _host_row(runtime, host)
         if _matches_query(row, query):
             rows.append(row)
-    data = {'hosts': rows, 'count': len(rows)}
-    return data, '{} hosts.'.format(len(rows))
+    data = _apply_sync_state({'hosts': rows, 'count': len(rows)}, sync)
+    if data.get('stale'):
+        summary = (
+            '{} hosts. Cloud pull failed; this list is the local cache.'
+        ).format(len(rows))
+    else:
+        summary = '{} hosts.'.format(len(rows))
+    return data, summary
 
 
 def handle_host(runtime, arguments):
-    _auto_sync(runtime)
+    sync = _auto_sync(runtime, ttl=HOST_PULL_TTL, allow_stale=True)
     try:
         host = find_host(runtime.storage, arguments.get('name'))
     except HostLookupError as exc:
@@ -521,7 +567,13 @@ def handle_host(runtime, arguments):
         'startup_snippet': snippet.label if snippet else None,
         'ssh_command': command,
     }
-    return data, '{} ({})'.format(host.label or host.address, host.address)
+    _apply_sync_state(data, sync)
+    summary = '{} ({})'.format(host.label or host.address, host.address)
+    if data.get('stale'):
+        summary = '{} Cloud pull failed; this is the local cache.'.format(
+            summary
+        )
+    return data, summary
 
 
 def handle_exec(runtime, arguments):

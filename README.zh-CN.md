@@ -83,7 +83,9 @@ Pi / OMP（`~/.omp/agent/mcp.json`）：
 | 变量 | 用途 |
 | --- | --- |
 | `TERMIUS_VAULT_PASSWORD` | 保险库加密密码（优先于记住文件） |
-| `TERMIUS_SYNC_TTL` | 下次自动拉取前的秒数。默认 `60`。`0` 表示每次读取都拉取。 |
+| `TERMIUS_SYNC_TTL` | `exec`、`files`、`inventory` 下次自动拉取前的秒数。默认 `60`。`0` 表示每次读取都拉取。`hosts` 和 `host` 在缓存超过 600 秒时拉取，拉取失败则返回本地缓存。 |
+| `TERMIUS_KEYRING` | `1` 强制用系统钥匙串，`0` 强制用本地机密文件。默认用 `config` 里记下的后端。还没有记录时自动判断。`PYTHON_KEYRING_BACKEND` 只在还没有记录时选择钥匙串。 |
+| `TERMIUS_SECRETS_KEY` | 用来封装 `~/.termius/secrets` 的口令，代替机器标识。容器里要设置它，这样新容器才能读同一个文件。 |
 
 ## 首次设置
 
@@ -151,7 +153,7 @@ Google：
 
 该 URL 包含 Firebase ID token，约一小时后过期。不要分享该 URL。
 
-`TERMIUS_VAULT_PASSWORD` 提供保险库密码，并跳过提示。默认记住会把密码存入系统钥匙串。传入 `--no-remember` 可跳过这一步。
+`TERMIUS_VAULT_PASSWORD` 提供保险库密码，并跳过提示。默认记住会把密码存进机密存储：系统钥匙串，或没有钥匙串的机器上的 `~/.termius/secrets`。传入 `--no-remember` 可跳过这一步。
 
 查看会话：
 
@@ -172,8 +174,8 @@ termius logout
 如果以前登录过，钥匙串中已经有 DeviceToken：
 
 1. 调用 `status`。预期 `logged_in: true`，并且经常是 `vault_remembered: false`。
-2. 调用 `sync`，并传入 Termius 应用中的**保险库加密密码**（不是 Google 密码）。默认 `remember=true` 会把密码存入系统钥匙串。
-3. 调用 `hosts`。之后的读取会在缓存早于 `TERMIUS_SYNC_TTL` 时自动拉取。
+2. 调用 `sync`，并传入 Termius 应用中的**保险库加密密码**（不是 Google 密码）。默认 `remember=true` 会把密码存进机密存储。
+3. 调用 `hosts`。本地缓存超过 600 秒时，它会拉取云端。
 
 如果这台机器从未登录，并且你不使用 `termius login`：
 
@@ -194,20 +196,28 @@ termius logout
 | `login` | `method=email` 需要用户名和密码，或 `method=google` 获取 SSO URL |
 | `login_complete` | 用 `callback_url` 和保险库密码完成 Google SSO |
 | `logout` | 清除会话、已记住的密码和本地清单 |
-| `sync` | 立即从云端强制拉取 |
-| `hosts` | 列出主机（可选 `query`） |
-| `host` | 一台主机 + 合并后的 SSH 设置 + `ssh_command` |
+| `sync` | 立即强制拉取，也是传入并记住保险库密码的入口 |
+| `hosts` | 列出主机（可选 `query`）。缓存超过 600 秒时拉取。拉取失败则返回本地缓存 |
+| `host` | 一台主机 + 合并后的 SSH 设置 + `ssh_command`。缓存超过 600 秒时拉取。拉取失败则返回本地缓存 |
 | `exec` | 通过 SSH 运行远程命令 |
 | `files` | SFTP list / stat / read / write / get / put / mkdir / rm / rename |
 | `inventory` | `kind=groups\|identities\|keys\|snippets` |
 
-当本地缓存早于 `TERMIUS_SYNC_TTL`，并且保险库密码可用时，`hosts`、`host`、`exec`、`files` 和 `inventory` 会自动拉取。
+`hosts` 和 `host` 在本地缓存超过 600 秒时拉取。拉取失败时，它们返回本地缓存，并把 `stale` 设为 true。`sync_error` 是这次拉取的错误。没有登录或没有保险库密码时仍然报错。`exec`、`files` 和 `inventory` 在本地缓存早于 `TERMIUS_SYNC_TTL` 时拉取，前提是保险库密码可用。这三个工具在拉取失败时仍然让这次调用失败。
 
 `files` 使用与 `exec` 相同的 SSH 凭据，通过 SFTP 工作。`get` 和 `put` 在 MCP 主机文件系统与远程主机之间复制。`read` 和 `write` 通过工具结果传输文件内容（最大 200000 字节）。`get` 和 `put` 允许最大 50 MiB。`list` 默认把 `path` 设为 SSH 登录目录。
 
 ## 本地数据
 
-机密通过 [`keyring`](https://pypi.org/project/keyring/) 存入系统钥匙串：macOS 钥匙串、Windows 凭据管理器，或 Linux Secret Service（GNOME Keyring、KWallet）。条目的服务名为 `termius-mcp:<目录>`：
+桌面机器通过 [`keyring`](https://pypi.org/project/keyring/) 把机密存进系统钥匙串：macOS 钥匙串、Windows 凭据管理器，或 Linux Secret Service（GNOME Keyring、KWallet）。条目的服务名为 `termius-mcp:<目录>`。
+
+没有可用钥匙串的机器（服务器、容器、没有桌面会话的 Linux）把同样的名字存进 `~/.termius/secrets`：一个 Fernet 令牌，权限 `0600`。第一次启动把选择写进 `config` 的 `[Secrets] backend`。之后的启动沿用这个选择，所以同一台机器上的桌面会话和 SSH 会话用同一个存储。`TERMIUS_KEYRING` 可以改掉已保存的选择，并把新选择写回去。
+
+文件密钥由机器标识和用户 id 派生。这个文件不是可读文本，复制到别的机器或别的账号上也解不开。但它挡不住已经以这个用户身份登录这台机器的人。设置 `TERMIUS_SECRETS_KEY` 后，文件改用这个口令封装。容器里应该设置它。slim 镜像没有 `/etc/machine-id`，程序也不会回退到 MAC 地址。两者都没有时，这个文件的保密程度只和它所在的目录一样。
+
+第一次选择文件存储、并且 `secrets` 还是空的时候，如果系统钥匙串里已经有 `vault_password`、`User.apikey`、`User.private_key`、`User.personal_v4_key` 和 `storage_key`，这些条目会复制进文件。钥匙串里的原条目保留。还没有保存选择时，`PYTHON_KEYRING_BACKEND` 会选钥匙串。这样，按旧说明在无头机器上设置了这个变量的安装会继续用钥匙串。
+
+机密名：
 
 - `vault_password` — 已记住的保险库密码（如果你选择了 `remember`）
 - `User.apikey` — DeviceToken
@@ -218,12 +228,30 @@ termius logout
 
 - `config` — 用户名、salt、`last_synced`
 - `storage` — 主机、分组、身份、密钥、代码片段，用 `storage_key` 加密（Fernet），权限为 `0600`
+- `secrets` — 只在没有钥匙串的机器上出现，见上
 
 私钥只保存在 `storage` 中。`exec` 和 `files` 在内存中加载私钥，因此 `host` 返回的 `ssh_command` 不带 `-i` 选项。
 
-首次启动时，旧版本留下的明文数据会迁入钥匙串：移走 `vault` 文件和 `config` 中的机密，加密 `storage`，删除 `ssh_keys/`。
+首次启动时，旧版本留下的明文数据会迁入机密存储：移走 `vault` 文件和 `config` 中的机密，加密 `storage`，删除 `ssh_keys/`。
 
-没有 Secret Service 的无头 Linux 没有默认后端。请在该机器上运行 Secret Service，或把 `PYTHON_KEYRING_BACKEND` 设为其他 `keyring` 后端。
+机密文件格式损坏，或者是别的版本写的，服务器把它改名为 `secrets.bad-<UTC 时间>`，然后用空存储启动。这时 `status` 报告 `logged_in: false`。重新登录即可。改名后的文件会留下来。
+
+用 `TERMIUS_SECRETS_KEY` 封装的文件，在这个变量没设或者对不上时，服务器不会启动。文件字节保持原样。把同一个口令设回去再启动。
+
+文件绑在另一台机器的标识上时，服务器也不会启动。文件字节保持原样。`/etc/machine-id` 变了（重装系统、克隆镜像），或者文件被搬到别的机器，都会这样。把 `secrets` 移到旁边，再启动，然后重新登录，重新输入保险库密码。进程不会自己换掉这个文件。换一个空存储会丢掉已保存的登录。
+
+## 回退到 PyPI 3.0.0
+
+需要 Termius 账号和保险库密码。如果密码只在 `secrets` 里，而你不记得它，就不要回退。
+
+1. 停掉所有 `termius-mcp` 进程。运行 `pgrep -af termius`，确认没有进程。
+2. 备份目录：`cp -a ~/.termius ~/.termius.bak-$(date +%Y%m%dT%H%M%S)`。
+3. 如果留着升级前的 `~/.termius` 备份，恢复那个备份，然后停在这里。
+4. 没有备份时，把 `~/.termius/storage` 和 `~/.termius/secrets` 移到旁边。不要删除。
+5. 运行 `pip install termius-mcp==3.0.0`。
+6. 启动服务器，重新登录，然后调用 `hosts`。
+
+3.0.0 打不开这个版本写的 `storage`。它会抛出 `ValueError: File not in a supported format`，并且启动不了。移走 `storage` 和 `secrets` 之后，3.0.0 可以启动，主机数为 0，apikey 为空。`config` 里的 `[Secrets]` 段不影响 3.0.0。3.0.0 会把 apikey 以明文写回 `config`。
 
 ## 加密说明
 

@@ -10,7 +10,7 @@ from .core.signals import post_logout
 from .core.storage import ApplicationStorage
 from .core.storage.strategies import RelatedGetStrategy, SyncSaveStrategy
 from .core.subscribers import clean_data
-from .keychain import SecretStore
+from .keychain import create_secret_store
 from .vault import migrate_legacy_file
 
 
@@ -24,7 +24,7 @@ class Runtime(object):
         if not self.directory_path.is_dir():
             self.directory_path.mkdir(parents=True)
         post_logout.connect(clean_data)
-        self.secrets = SecretStore(self.directory_path)
+        self.secrets = create_secret_store(self.directory_path)
         self.config = Config(self, secrets=self.secrets)
         self._storage_cipher = self.secrets.storage_cipher()
         self.storage = self._open_storage()

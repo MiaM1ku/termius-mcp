@@ -5,6 +5,7 @@ import logging
 import sys
 
 from termius.cli import run as run_cli
+from termius.keychain import SecretStoreError
 from termius.mcp.server import run_stdio
 
 
@@ -26,17 +27,21 @@ def main(argv=None):
     else:
         argv = list(argv)
     _configure_logging()
-    if not argv:
-        if sys.stdin.isatty():
-            sys.stderr.write(
-                'Termius MCP server. Point your MCP client at this binary '
-                '(no args). To sign in from a terminal, run: termius login\n'
-                'Waiting on stdin.\n'
-            )
-            sys.stderr.flush()
-        run_stdio()
-        return 0
-    return run_cli(argv)
+    try:
+        if not argv:
+            if sys.stdin.isatty():
+                sys.stderr.write(
+                    'Termius MCP server. Point your MCP client at this binary '
+                    '(no args). To sign in from a terminal, run: termius login\n'
+                    'Waiting on stdin.\n'
+                )
+                sys.stderr.flush()
+            run_stdio()
+            return 0
+        return run_cli(argv)
+    except SecretStoreError as exc:
+        sys.stderr.write('termius: {}\n'.format(exc))
+        return 1
 
 
 if __name__ == '__main__':
