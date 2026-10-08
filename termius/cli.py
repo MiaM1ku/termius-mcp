@@ -314,4 +314,11 @@ def _write_line(stream, text):
 
 
 def _stdin_prompt(message):
+    # readline reads the tty in raw mode. Without it, canonical mode drops
+    # input past MAX_CANON (1024 bytes on macOS), Enter included, and an
+    # SSO callback URL is longer than that.
+    try:
+        import readline  # noqa: F401  pylint: disable=import-outside-toplevel,unused-import
+    except ImportError:
+        pass
     return input(message)

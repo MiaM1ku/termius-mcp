@@ -116,18 +116,57 @@ Google:
 
 1. Open the printed `https://account.termius.com/sso/desktop?...` URL.
 2. Sign in with Google.
-3. When the page tries to open Termius, copy
-   `termius://app/continue-sso?...`.
+3. When the browser asks to open Termius, decline. Get the
+   `termius://app/continue-sso?...` URL with the script in
+   [Get the callback URL](#get-the-callback-url).
 4. Paste that URL.
 5. Enter the vault encryption password from the Termius app. This is not
    the Google password.
-6. If 2FA is on, enter the OTP.
+6. If 2FA is on, enter the OTP from your authenticator app. Termius does not
+   send it by email.
 
 Email:
 
 1. Enter the Termius email if you did not pass `-u`.
 2. Enter the vault / account password.
-3. If 2FA is on, enter the OTP.
+3. If 2FA is on, enter the OTP from your authenticator app.
+
+#### Get the callback URL
+
+The page sets `window.location` to the `termius://` URL. It has no link to
+copy. Build the URL from the page state instead:
+
+1. Stay on the "Redirecting to Termius" page.
+2. Open the JavaScript console. In Safari, turn on Settings > Advanced >
+   "Show features for web developers", then press Option-Command-C.
+3. Paste this script and press Return:
+
+   ```js
+   (async () => {
+     const requestId = new URLSearchParams(location.search).get('request');
+     const db = await new Promise((resolve, reject) => {
+       const req = indexedDB.open('firebaseLocalStorageDb');
+       req.onsuccess = () => resolve(req.result);
+       req.onerror = () => reject(req.error);
+     });
+     const rows = await new Promise((resolve, reject) => {
+       const req = db.transaction('firebaseLocalStorage').objectStore('firebaseLocalStorage').getAll();
+       req.onsuccess = () => resolve(req.result);
+       req.onerror = () => reject(req.error);
+     });
+     const user = rows.map((row) => row.value).find((value) => value && value.stsTokenManager);
+     if (!user || !requestId) throw new Error('Finish Google sign-in on this page first.');
+     window.termiusSsoUrl = 'termius://app/continue-sso?email=' + encodeURIComponent(user.email)
+       + '&firebaseToken=' + user.stsTokenManager.accessToken
+       + '&requestId=' + requestId;
+     prompt('Copy this URL into termius login', window.termiusSsoUrl);
+   })()
+   ```
+
+4. Copy the URL from the dialog.
+
+The URL contains a Firebase ID token. The token expires after about one
+hour. Do not share the URL.
 
 `TERMIUS_VAULT_PASSWORD` supplies the vault password and skips the prompt.
 Default remember stores the vault password in the OS keychain. Pass

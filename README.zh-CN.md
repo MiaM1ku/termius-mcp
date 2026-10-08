@@ -106,16 +106,50 @@ Google：
 
 1. 打开打印的 `https://account.termius.com/sso/desktop?...` URL。
 2. 用 Google 登录。
-3. 当页面尝试打开 Termius 时，复制 `termius://app/continue-sso?...`。
+3. 浏览器询问是否打开 Termius 时，选择拒绝。用[获取回调 URL](#获取回调-url) 中的脚本获取 `termius://app/continue-sso?...`。
 4. 粘贴该 URL。
 5. 输入 Termius 应用中的保险库加密密码。这不是 Google 密码。
-6. 如果开启了 2FA，输入 OTP。
+6. 如果开启了 2FA，输入验证器应用中的 OTP。Termius 不通过邮件发送 OTP。
 
 邮箱：
 
 1. 如果未传入 `-u`，输入 Termius 邮箱。
 2. 输入保险库 / 账户密码。
-3. 如果开启了 2FA，输入 OTP。
+3. 如果开启了 2FA，输入验证器应用中的 OTP。
+
+#### 获取回调 URL
+
+页面通过设置 `window.location` 跳转到 `termius://` URL，没有可复制的链接。改用页面状态拼出该 URL：
+
+1. 停留在 "Redirecting to Termius" 页面。
+2. 打开 JavaScript 控制台。在 Safari 中，先开启「设置 > 高级 > 显示网页开发者功能」，再按 Option-Command-C。
+3. 粘贴以下脚本并按回车：
+
+   ```js
+   (async () => {
+     const requestId = new URLSearchParams(location.search).get('request');
+     const db = await new Promise((resolve, reject) => {
+       const req = indexedDB.open('firebaseLocalStorageDb');
+       req.onsuccess = () => resolve(req.result);
+       req.onerror = () => reject(req.error);
+     });
+     const rows = await new Promise((resolve, reject) => {
+       const req = db.transaction('firebaseLocalStorage').objectStore('firebaseLocalStorage').getAll();
+       req.onsuccess = () => resolve(req.result);
+       req.onerror = () => reject(req.error);
+     });
+     const user = rows.map((row) => row.value).find((value) => value && value.stsTokenManager);
+     if (!user || !requestId) throw new Error('Finish Google sign-in on this page first.');
+     window.termiusSsoUrl = 'termius://app/continue-sso?email=' + encodeURIComponent(user.email)
+       + '&firebaseToken=' + user.stsTokenManager.accessToken
+       + '&requestId=' + requestId;
+     prompt('Copy this URL into termius login', window.termiusSsoUrl);
+   })()
+   ```
+
+4. 从对话框中复制该 URL。
+
+该 URL 包含 Firebase ID token，约一小时后过期。不要分享该 URL。
 
 `TERMIUS_VAULT_PASSWORD` 提供保险库密码，并跳过提示。默认记住会把密码存入系统钥匙串。传入 `--no-remember` 可跳过这一步。
 
