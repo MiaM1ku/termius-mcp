@@ -92,8 +92,9 @@ Optional environment variables:
 | Variable | Purpose |
 | --- | --- |
 | `TERMIUS_VAULT_PASSWORD` | Vault encryption password (preferred over the remember file) |
-| `TERMIUS_SYNC_TTL` | Seconds before an automatic pull in `exec`, `files`, and `inventory`. Default `60`. `0` pulls on every read. `hosts` and `host` always pull. |
-| `TERMIUS_KEYRING` | `1` forces the OS keychain, `0` forces the local secrets file. Default: pick automatically. |
+| `TERMIUS_SYNC_TTL` | Seconds before an automatic pull in `exec`, `files`, and `inventory`. Default `60`. `0` pulls on every read. `hosts` and `host` always pull, then fall back to the local cache if the pull fails. |
+| `TERMIUS_KEYRING` | `1` forces the OS keychain, `0` forces the local secrets file. Default: use the backend saved in `config`. With no saved choice, pick automatically. `PYTHON_KEYRING_BACKEND` selects the keychain only before a choice is saved. |
+| `TERMIUS_SECRETS_KEY` | Passphrase that seals `~/.termius/secrets` instead of the machine id. Set this in a container so a new container can read the same file. |
 
 ## First-time setup
 
@@ -223,15 +224,17 @@ Call `status` first.
 | `login_complete` | Finish Google SSO with `callback_url` + vault password |
 | `logout` | Clear the session, remembered password, and local inventory |
 | `sync` | Force a pull now; also how you pass and remember the vault password |
-| `hosts` | List hosts (optional `query`). Pulls on every call |
-| `host` | One host + merged SSH settings + `ssh_command`. Pulls on every call |
+| `hosts` | List hosts (optional `query`). Pulls on every call. Returns the local cache if the pull fails |
+| `host` | One host + merged SSH settings + `ssh_command`. Pulls on every call. Returns the local cache if the pull fails |
 | `exec` | Run a remote command over SSH |
 | `files` | SFTP list / stat / read / write / get / put / mkdir / rm / rename |
 | `inventory` | `kind=groups\|identities\|keys\|snippets` |
 
-`hosts` and `host` pull on every call, so they never show a stale list.
-`exec`, `files`, and `inventory` pull when the local cache is older than
-`TERMIUS_SYNC_TTL` and a vault password is available.
+`hosts` and `host` pull on every call. If that pull fails, they return the
+local cache and set `stale` to true. `sync_error` is the pull error. A missing
+sign-in or vault password is still an error. `exec`, `files`, and `inventory`
+pull when the local cache is older than `TERMIUS_SYNC_TTL` and a vault password
+is available. Those three tools still fail the call when the pull fails.
 
 `files` uses SFTP on the same SSH credentials as `exec`. `get` and `put` copy
 between the MCP host filesystem and the remote host. `read` and `write` move
@@ -245,12 +248,27 @@ A desktop machine keeps secrets in the OS keychain through
 Windows Credential Manager, or the Linux Secret Service (GNOME Keyring,
 KWallet). Entries use the service name `termius-mcp:<directory>`.
 
-A machine with no usable keychain — a server, a container, a Linux box with
-no desktop session — keeps the same names in `~/.termius/secrets` instead:
-one Fernet token, mode `0600`, keyed on the machine and the user that wrote
-it. The file is unreadable text, and a copy of it is useless on another
-machine or account. It does not hide anything from somebody who is already
-this user on this machine. `TERMIUS_KEYRING=0` and `=1` pick a side by hand.
+A machine with no usable keychain (a server, a container, or a Linux box with
+no desktop session) keeps the same names in `~/.termius/secrets` instead:
+one Fernet token, mode `0600`. The first start writes the choice to `config`
+as `[Secrets] backend`. Later starts keep that choice, so a desktop session
+and an SSH session on the same machine use the same store. `TERMIUS_KEYRING`
+overrides the saved choice and saves the new one.
+
+The file key comes from the machine id and the user id. The file is not
+readable text, and a copy of it does not open on another machine or account.
+It does not hide anything from somebody who is already this user on this
+machine. Set `TERMIUS_SECRETS_KEY` to seal the file with that passphrase
+instead. A container should set it: a slim image has no `/etc/machine-id`,
+and Docker assigns a new MAC address on each `docker run`, so a machine-bound
+file will not open in the next container.
+
+On the first start that selects the file, an empty `secrets` file copies
+`vault_password`, `User.apikey`, `User.private_key`, `User.personal_v4_key`,
+and `storage_key` out of the OS keychain when those entries exist. The
+keychain entries stay in place. `PYTHON_KEYRING_BACKEND` selects the keychain
+when no choice is saved yet, which keeps a headless install that followed the
+older instructions on the keychain.
 
 Names in the store:
 
@@ -273,11 +291,13 @@ On first start, plaintext data from older versions moves into the secret
 store: the `vault` file and the secrets in `config` are moved, `storage` is
 encrypted, and `ssh_keys/` is deleted.
 
-The secrets file is bound to the machine and the user that wrote it. If
-`/etc/machine-id` changes (a reinstall or a cloned image) or the file moves
-to another host, the server stops with a message that says to delete
-`~/.termius/secrets` and sign in again. Losing it costs one cloud pull and
-one sign-in, not the vault itself.
+If the secrets file cannot be decrypted, the server renames it to
+`secrets.bad-<UTC timestamp>` and starts with an empty store. `status` then
+reports `logged_in: false`. Sign in again. The renamed file is kept. Losing
+the store costs one cloud pull and one sign-in, not the vault itself. This
+happens when `/etc/machine-id` changes (a reinstall or a cloned image), when
+the file moves to another host, or when `TERMIUS_SECRETS_KEY` is missing for
+a file that was sealed with it.
 
 ## Encryption notes
 

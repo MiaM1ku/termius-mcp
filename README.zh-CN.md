@@ -83,8 +83,9 @@ Pi / OMP（`~/.omp/agent/mcp.json`）：
 | 变量 | 用途 |
 | --- | --- |
 | `TERMIUS_VAULT_PASSWORD` | 保险库加密密码（优先于记住文件） |
-| `TERMIUS_SYNC_TTL` | `exec`、`files`、`inventory` 下次自动拉取前的秒数。默认 `60`。`0` 表示每次读取都拉取。`hosts` 和 `host` 每次都拉。 |
-| `TERMIUS_KEYRING` | `1` 强制用系统钥匙串，`0` 强制用本地机密文件。默认自动判断。 |
+| `TERMIUS_SYNC_TTL` | `exec`、`files`、`inventory` 下次自动拉取前的秒数。默认 `60`。`0` 表示每次读取都拉取。`hosts` 和 `host` 每次都拉，拉取失败则返回本地缓存。 |
+| `TERMIUS_KEYRING` | `1` 强制用系统钥匙串，`0` 强制用本地机密文件。默认用 `config` 里记下的后端。还没有记录时自动判断。`PYTHON_KEYRING_BACKEND` 只在还没有记录时选择钥匙串。 |
+| `TERMIUS_SECRETS_KEY` | 用来封装 `~/.termius/secrets` 的口令，代替机器标识。容器里要设置它，这样新容器才能读同一个文件。 |
 
 ## 首次设置
 
@@ -196,13 +197,13 @@ termius logout
 | `login_complete` | 用 `callback_url` 和保险库密码完成 Google SSO |
 | `logout` | 清除会话、已记住的密码和本地清单 |
 | `sync` | 立即强制拉取，也是传入并记住保险库密码的入口 |
-| `hosts` | 列出主机（可选 `query`）。每次调用都拉取 |
-| `host` | 一台主机 + 合并后的 SSH 设置 + `ssh_command`。每次调用都拉取 |
+| `hosts` | 列出主机（可选 `query`）。每次调用都拉取。拉取失败则返回本地缓存 |
+| `host` | 一台主机 + 合并后的 SSH 设置 + `ssh_command`。每次调用都拉取。拉取失败则返回本地缓存 |
 | `exec` | 通过 SSH 运行远程命令 |
 | `files` | SFTP list / stat / read / write / get / put / mkdir / rm / rename |
 | `inventory` | `kind=groups\|identities\|keys\|snippets` |
 
-`hosts` 和 `host` 每次调用都先拉取，所以不会看到过期的列表。`exec`、`files` 和 `inventory` 在本地缓存早于 `TERMIUS_SYNC_TTL` 时拉取，前提是保险库密码可用。
+`hosts` 和 `host` 每次调用都先拉取。拉取失败时，它们返回本地缓存，并把 `stale` 设为 true。`sync_error` 是这次拉取的错误。没有登录或没有保险库密码时仍然报错。`exec`、`files` 和 `inventory` 在本地缓存早于 `TERMIUS_SYNC_TTL` 时拉取，前提是保险库密码可用。这三个工具在拉取失败时仍然让这次调用失败。
 
 `files` 使用与 `exec` 相同的 SSH 凭据，通过 SFTP 工作。`get` 和 `put` 在 MCP 主机文件系统与远程主机之间复制。`read` 和 `write` 通过工具结果传输文件内容（最大 200000 字节）。`get` 和 `put` 允许最大 50 MiB。`list` 默认把 `path` 设为 SSH 登录目录。
 
@@ -210,7 +211,11 @@ termius logout
 
 桌面机器通过 [`keyring`](https://pypi.org/project/keyring/) 把机密存进系统钥匙串：macOS 钥匙串、Windows 凭据管理器，或 Linux Secret Service（GNOME Keyring、KWallet）。条目的服务名为 `termius-mcp:<目录>`。
 
-没有可用钥匙串的机器（服务器、容器、没有桌面会话的 Linux）把同样的名字存进 `~/.termius/secrets`：一个 Fernet 令牌，权限 `0600`，密钥由机器和写它的用户派生。这个文件不是可读文本，复制到别的机器或别的账号上也解不开。但它挡不住已经以这个用户身份登录这台机器的人。`TERMIUS_KEYRING=0` 和 `=1` 可以手动指定用哪一边。
+没有可用钥匙串的机器（服务器、容器、没有桌面会话的 Linux）把同样的名字存进 `~/.termius/secrets`：一个 Fernet 令牌，权限 `0600`。第一次启动把选择写进 `config` 的 `[Secrets] backend`。之后的启动沿用这个选择，所以同一台机器上的桌面会话和 SSH 会话用同一个存储。`TERMIUS_KEYRING` 可以改掉已保存的选择，并把新选择写回去。
+
+文件密钥由机器标识和用户 id 派生。这个文件不是可读文本，复制到别的机器或别的账号上也解不开。但它挡不住已经以这个用户身份登录这台机器的人。设置 `TERMIUS_SECRETS_KEY` 后，文件改用这个口令封装。容器里应该设置它：slim 镜像没有 `/etc/machine-id`，而且 Docker 每次 `docker run` 都会分配新的 MAC 地址，所以绑在机器上的文件在下一个容器里解不开。
+
+第一次选择文件存储、并且 `secrets` 还是空的时候，如果系统钥匙串里已经有 `vault_password`、`User.apikey`、`User.private_key`、`User.personal_v4_key` 和 `storage_key`，这些条目会复制进文件。钥匙串里的原条目保留。还没有保存选择时，`PYTHON_KEYRING_BACKEND` 会选钥匙串。这样，按旧说明在无头机器上设置了这个变量的安装会继续用钥匙串。
 
 机密名：
 
@@ -229,7 +234,7 @@ termius logout
 
 首次启动时，旧版本留下的明文数据会迁入机密存储：移走 `vault` 文件和 `config` 中的机密，加密 `storage`，删除 `ssh_keys/`。
 
-机密文件绑定写它的机器和用户。如果 `/etc/machine-id` 变了（重装系统、克隆镜像），或者文件被搬到别的机器，服务器会直接停下，并提示你删掉 `~/.termius/secrets` 重新登录。丢的只是一次云端拉取和一次登录，保险库本身不受影响。
+如果机密文件解不开，服务器把它改名为 `secrets.bad-<UTC 时间>`，然后用空存储启动。这时 `status` 报告 `logged_in: false`。重新登录即可。改名后的文件会留下来。丢掉的只是一次云端拉取和一次登录，保险库本身不受影响。`/etc/machine-id` 变了（重装系统、克隆镜像）、文件被搬到别的机器，或者用 `TERMIUS_SECRETS_KEY` 封装的文件缺少这个变量时，都会走到这一步。
 
 ## 加密说明
 

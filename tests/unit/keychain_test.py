@@ -10,17 +10,28 @@ from unittest.mock import patch
 from termius import keychain
 from termius.keychain import (
     FILE_FORMAT, FileSecretStore, KeyringSecretStore, STORAGE_KEY,
-    SecretStoreError, create_secret_store,
+    create_secret_store,
 )
 
 
 class FileSecretStoreTest(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
+        self._passphrase = os.environ.pop(keychain.SECRETS_KEY_ENV, None)
         self.store = FileSecretStore(self.tmpdir.name)
 
     def tearDown(self):
+        if self._passphrase is None:
+            os.environ.pop(keychain.SECRETS_KEY_ENV, None)
+        else:
+            os.environ[keychain.SECRETS_KEY_ENV] = self._passphrase
         self.tmpdir.cleanup()
+
+    def _bad_files(self):
+        return [
+            name for name in os.listdir(self.tmpdir.name)
+            if '.bad-' in name
+        ]
 
     def _raw(self):
         with open(self.store.path, 'rb') as fileobj:
@@ -66,21 +77,66 @@ class FileSecretStoreTest(unittest.TestCase):
         self.assertTrue(envelope['salt'])
         self.assertTrue(envelope['data'])
 
-    def test_another_machine_cannot_read_it(self):
+    def test_another_machine_starts_empty_and_keeps_the_file(self):
         self.store.set('vault_password', 'hunter2')
         with patch.object(
             keychain, '_machine_material', return_value=b'another machine'
         ):
             reopened = FileSecretStore(self.tmpdir.name)
-            with self.assertRaises(SecretStoreError) as caught:
-                reopened.get('vault_password')
-        self.assertIn('Delete it', str(caught.exception))
+            self.assertIsNone(reopened.get('vault_password'))
+        self.assertEqual(len(self._bad_files()), 1)
+        self.assertFalse(os.path.exists(self.store.path))
 
-    def test_plain_file_is_rejected(self):
+    def test_plain_file_is_quarantined(self):
         with open(self.store.path, 'w') as fileobj:
             fileobj.write('vault_password=hunter2\n')
-        with self.assertRaises(SecretStoreError):
-            self.store.get('vault_password')
+        self.assertIsNone(self.store.get('vault_password'))
+        self.assertEqual(len(self._bad_files()), 1)
+        self.assertFalse(os.path.exists(self.store.path))
+
+    def test_env_key_opens_on_another_machine(self):
+        os.environ[keychain.SECRETS_KEY_ENV] = 'container-secret'
+        self.store.set('vault_password', 'hunter2')
+        envelope = json.loads(self._raw().decode('utf-8'))
+        self.assertEqual(envelope['kdf'], 'env')
+        with patch.object(
+            keychain, '_machine_material', return_value=b'another machine'
+        ):
+            reopened = FileSecretStore(self.tmpdir.name)
+            self.assertEqual(reopened.get('vault_password'), 'hunter2')
+
+    def test_setting_env_key_reseals_a_machine_file(self):
+        self.store.set('vault_password', 'hunter2')
+        os.environ[keychain.SECRETS_KEY_ENV] = 'container-secret'
+        reopened = FileSecretStore(self.tmpdir.name)
+        self.assertEqual(reopened.get('vault_password'), 'hunter2')
+        envelope = json.loads(self._raw().decode('utf-8'))
+        self.assertEqual(envelope['kdf'], 'env')
+
+    def test_missing_env_key_quarantines_the_file(self):
+        os.environ[keychain.SECRETS_KEY_ENV] = 'container-secret'
+        self.store.set('vault_password', 'hunter2')
+        os.environ.pop(keychain.SECRETS_KEY_ENV)
+        reopened = FileSecretStore(self.tmpdir.name)
+        self.assertIsNone(reopened.get('vault_password'))
+        self.assertEqual(len(self._bad_files()), 1)
+
+    def test_runtime_starts_when_the_secrets_file_is_unreadable(self):
+        with open(self.store.path, 'w') as fileobj:
+            fileobj.write('not-a-secrets-file')
+        previous = os.environ.get(keychain.KEYRING_ENV)
+        os.environ[keychain.KEYRING_ENV] = '0'
+        try:
+            from termius.runtime import Runtime
+            runtime = Runtime(self.tmpdir.name)
+            self.assertIsNone(runtime.secrets.get('vault_password'))
+            self.assertFalse(runtime.config.get_safe('User', 'apikey'))
+            self.assertEqual(len(self._bad_files()), 1)
+        finally:
+            if previous is None:
+                os.environ.pop(keychain.KEYRING_ENV, None)
+            else:
+                os.environ[keychain.KEYRING_ENV] = previous
 
     def test_storage_cipher_survives_a_reopen(self):
         token = self.store.storage_cipher().encrypt(b'payload')
@@ -158,23 +214,36 @@ class SecretServiceProbeTest(unittest.TestCase):
 class StoreSelectionTest(unittest.TestCase):
     def setUp(self):
         self._forced = os.environ.pop(keychain.KEYRING_ENV, None)
+        self._backend = os.environ.pop(keychain.KEYRING_BACKEND_ENV, None)
+        self.tmpdir = tempfile.TemporaryDirectory()
 
     def tearDown(self):
+        self.tmpdir.cleanup()
         if self._forced is None:
             os.environ.pop(keychain.KEYRING_ENV, None)
         else:
             os.environ[keychain.KEYRING_ENV] = self._forced
+        if self._backend is None:
+            os.environ.pop(keychain.KEYRING_BACKEND_ENV, None)
+        else:
+            os.environ[keychain.KEYRING_BACKEND_ENV] = self._backend
 
     def test_env_forces_the_file(self):
         os.environ[keychain.KEYRING_ENV] = '0'
         self.assertFalse(keychain.use_keyring())
-        self.assertIsInstance(create_secret_store('/tmp'), FileSecretStore)
+        store = create_secret_store(self.tmpdir.name)
+        self.assertIsInstance(store, FileSecretStore)
+        self.assertEqual(
+            keychain.read_store_backend(self.tmpdir.name), 'file'
+        )
 
     def test_env_forces_the_keychain(self):
         os.environ[keychain.KEYRING_ENV] = '1'
         self.assertTrue(keychain.use_keyring())
-        self.assertIsInstance(
-            create_secret_store('/tmp'), KeyringSecretStore
+        store = create_secret_store(self.tmpdir.name)
+        self.assertIsInstance(store, KeyringSecretStore)
+        self.assertEqual(
+            keychain.read_store_backend(self.tmpdir.name), 'keyring'
         )
 
     def test_desktop_defaults_to_the_keychain(self):
@@ -188,7 +257,10 @@ class StoreSelectionTest(unittest.TestCase):
                 ):
             self.assertFalse(keychain.use_keyring())
             self.assertIsInstance(
-                create_secret_store('/tmp'), FileSecretStore
+                create_secret_store(self.tmpdir.name), FileSecretStore
+            )
+            self.assertEqual(
+                keychain.read_store_backend(self.tmpdir.name), 'file'
             )
 
     def test_keychain_falls_back_when_keyring_is_missing(self):
@@ -199,5 +271,62 @@ class StoreSelectionTest(unittest.TestCase):
                     side_effect=ImportError('no keyring'),
                 ):
             self.assertIsInstance(
-                create_secret_store('/tmp'), FileSecretStore
+                create_secret_store(self.tmpdir.name), FileSecretStore
             )
+
+    def test_python_keyring_backend_selects_the_keychain(self):
+        os.environ[keychain.KEYRING_BACKEND_ENV] = (
+            'keyring.backends.null.Keyring'
+        )
+        with patch.object(keychain, 'desktop_os', return_value=False), \
+                patch.object(
+                    keychain, 'secret_service_usable', return_value=False
+                ):
+            self.assertTrue(keychain.use_keyring(self.tmpdir.name))
+
+    def test_saved_file_choice_ignores_a_later_desktop(self):
+        keychain.write_store_backend(self.tmpdir.name, 'file')
+        with patch.object(keychain, 'desktop_os', return_value=True):
+            store = create_secret_store(self.tmpdir.name)
+        self.assertIsInstance(store, FileSecretStore)
+
+    def test_saved_keyring_choice_ignores_a_later_headless_probe(self):
+        keychain.write_store_backend(self.tmpdir.name, 'keyring')
+        with patch.object(keychain, 'desktop_os', return_value=False), \
+                patch.object(
+                    keychain, 'secret_service_usable', return_value=False
+                ):
+            store = create_secret_store(self.tmpdir.name)
+        self.assertIsInstance(store, KeyringSecretStore)
+
+    def test_termius_keyring_overrides_the_saved_choice(self):
+        keychain.write_store_backend(self.tmpdir.name, 'keyring')
+        os.environ[keychain.KEYRING_ENV] = '0'
+        store = create_secret_store(self.tmpdir.name)
+        self.assertIsInstance(store, FileSecretStore)
+        self.assertEqual(
+            keychain.read_store_backend(self.tmpdir.name), 'file'
+        )
+
+    def test_empty_file_store_copies_keyring_entries(self):
+        os.environ[keychain.KEYRING_ENV] = '1'
+        keyring_store = create_secret_store(self.tmpdir.name)
+        keyring_store.set('vault_password', 'hunter2')
+        keyring_store.set('User.apikey', 'device-token')
+        keyring_store.set(STORAGE_KEY, 'storage-key')
+        os.environ[keychain.KEYRING_ENV] = '0'
+        file_store = create_secret_store(self.tmpdir.name)
+        self.assertIsInstance(file_store, FileSecretStore)
+        self.assertEqual(file_store.get('vault_password'), 'hunter2')
+        self.assertEqual(file_store.get('User.apikey'), 'device-token')
+        self.assertEqual(file_store.get(STORAGE_KEY), 'storage-key')
+        self.assertEqual(keyring_store.get('vault_password'), 'hunter2')
+
+    def test_nonempty_file_store_does_not_copy_keyring_entries(self):
+        os.environ[keychain.KEYRING_ENV] = '1'
+        keyring_store = create_secret_store(self.tmpdir.name)
+        keyring_store.set('vault_password', 'from-keyring')
+        os.environ[keychain.KEYRING_ENV] = '0'
+        FileSecretStore(self.tmpdir.name).set('vault_password', 'from-file')
+        file_store = create_secret_store(self.tmpdir.name)
+        self.assertEqual(file_store.get('vault_password'), 'from-file')

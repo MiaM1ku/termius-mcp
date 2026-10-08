@@ -2,6 +2,8 @@
 """MCP tool definitions and handlers."""
 from __future__ import unicode_literals
 
+import logging
+
 from ..account.managers import AccountManager
 from ..core.exceptions import ApiError, NotSignedIn
 from ..core.models.terminal import Group, Host, Identity, Snippet, SshKey
@@ -17,6 +19,9 @@ from ..sync import (
     ensure_fresh, inventory_counts, last_synced_raw, pull, status_payload,
 )
 from ..vault import VaultPasswordRequired, remember
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class ToolError(Exception):
@@ -198,10 +203,10 @@ TOOLS = [
         'List Hosts',
         (
             'List Termius hosts (id, label, address, group, username). '
-            'Pulls Termius Cloud on every call, so the list is current. '
-            'Filter with query against label, address, group, or username. '
-            'Use host for full SSH settings. Use exec to run a command. '
-            'Use files for SFTP.'
+            'Pulls Termius Cloud on every call. If that pull fails, returns '
+            'the local cache and sets stale to true. Filter with query '
+            'against label, address, group, or username. Use host for full '
+            'SSH settings. Use exec to run a command. Use files for SFTP.'
         ),
         _input_schema({
             'query': {
@@ -219,7 +224,8 @@ TOOLS = [
         'Host Details',
         (
             'One host plus merged SSH settings and a generated ssh(1) '
-            'command. Pulls Termius Cloud on every call. name is id or '
+            'command. Pulls Termius Cloud on every call. If that pull fails, '
+            'returns the local cache and sets stale to true. name is id or '
             'label. Does not return passwords or private keys.'
         ),
         _input_schema({
@@ -364,17 +370,37 @@ def _bool_arg(arguments, key, default=True):
     return bool(value)
 
 
-def _auto_sync(runtime, ttl=None):
+def _pull_failed(exc, allow_stale):
+    if not allow_stale:
+        raise ToolError(
+            'Cloud pull failed: {}'.format(exc), code='sync_failed'
+        )
+    LOGGER.warning('Cloud pull failed; serving the local cache: %s', exc)
+    return {'pulled': False, 'stale': True, 'sync_error': str(exc)}
+
+
+def _auto_sync(runtime, ttl=None, allow_stale=False):
     try:
-        return ensure_fresh(runtime, ttl=ttl)
+        result = ensure_fresh(runtime, ttl=ttl)
     except NotSignedIn as exc:
         raise ToolError(str(exc), code='not_signed_in')
     except VaultPasswordRequired as exc:
         raise ToolError(str(exc), code='vault_password_required')
-    except Exception as exc:
-        raise ToolError(
-            'Cloud pull failed: {}'.format(exc), code='sync_failed'
-        )
+    except Exception as exc:  # pylint: disable=broad-except
+        return _pull_failed(exc, allow_stale)
+    if not isinstance(result, dict):
+        result = {}
+    result = dict(result)
+    result['stale'] = False
+    return result
+
+
+def _apply_sync_state(data, sync):
+    """Mark a host payload when the pull failed and the cache was used."""
+    if sync.get('stale'):
+        data['stale'] = True
+        data['sync_error'] = sync.get('sync_error') or ''
+    return data
 
 
 def _host_row(runtime, host):
@@ -490,19 +516,25 @@ def handle_sync(runtime, arguments):
 
 
 def handle_hosts(runtime, arguments):
-    _auto_sync(runtime, ttl=ALWAYS_PULL_TTL)
+    sync = _auto_sync(runtime, ttl=ALWAYS_PULL_TTL, allow_stale=True)
     query = arguments.get('query') or ''
     rows = []
     for host in runtime.storage.get_all(Host):
         row = _host_row(runtime, host)
         if _matches_query(row, query):
             rows.append(row)
-    data = {'hosts': rows, 'count': len(rows)}
-    return data, '{} hosts.'.format(len(rows))
+    data = _apply_sync_state({'hosts': rows, 'count': len(rows)}, sync)
+    if data.get('stale'):
+        summary = (
+            '{} hosts. Cloud pull failed; this list is the local cache.'
+        ).format(len(rows))
+    else:
+        summary = '{} hosts.'.format(len(rows))
+    return data, summary
 
 
 def handle_host(runtime, arguments):
-    _auto_sync(runtime, ttl=ALWAYS_PULL_TTL)
+    sync = _auto_sync(runtime, ttl=ALWAYS_PULL_TTL, allow_stale=True)
     try:
         host = find_host(runtime.storage, arguments.get('name'))
     except HostLookupError as exc:
@@ -532,7 +564,13 @@ def handle_host(runtime, arguments):
         'startup_snippet': snippet.label if snippet else None,
         'ssh_command': command,
     }
-    return data, '{} ({})'.format(host.label or host.address, host.address)
+    _apply_sync_state(data, sync)
+    summary = '{} ({})'.format(host.label or host.address, host.address)
+    if data.get('stale'):
+        summary = '{} Cloud pull failed; this is the local cache.'.format(
+            summary
+        )
+    return data, summary
 
 
 def handle_exec(runtime, arguments):
