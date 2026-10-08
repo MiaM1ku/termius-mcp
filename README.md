@@ -92,7 +92,7 @@ Optional environment variables:
 | Variable | Purpose |
 | --- | --- |
 | `TERMIUS_VAULT_PASSWORD` | Vault encryption password (preferred over the remember file) |
-| `TERMIUS_SYNC_TTL` | Seconds before an automatic pull in `exec`, `files`, and `inventory`. Default `60`. `0` pulls on every read. `hosts` and `host` always pull, then fall back to the local cache if the pull fails. |
+| `TERMIUS_SYNC_TTL` | Seconds before an automatic pull in `exec`, `files`, and `inventory`. Default `60`. `0` pulls on every read. `hosts` and `host` pull when their cache is older than 600 seconds, then fall back to the local cache if the pull fails. |
 | `TERMIUS_KEYRING` | `1` forces the OS keychain, `0` forces the local secrets file. Default: use the backend saved in `config`. With no saved choice, pick automatically. `PYTHON_KEYRING_BACKEND` selects the keychain only before a choice is saved. |
 | `TERMIUS_SECRETS_KEY` | Passphrase that seals `~/.termius/secrets` instead of the machine id. Set this in a container so a new container can read the same file. |
 
@@ -197,8 +197,7 @@ If a previous login already stored a DeviceToken:
 2. Call `sync` with the **vault encryption password** from the Termius app
    (not the Google password). Default `remember=true` stores it in the
    secret store.
-3. Call `hosts`. It pulls Termius Cloud on every call, so the list is
-   always current.
+3. Call `hosts`. It pulls when the local cache is older than 600 seconds.
 
 If this machine has never signed in and you are not using `termius login`:
 
@@ -224,17 +223,18 @@ Call `status` first.
 | `login_complete` | Finish Google SSO with `callback_url` + vault password |
 | `logout` | Clear the session, remembered password, and local inventory |
 | `sync` | Force a pull now; also how you pass and remember the vault password |
-| `hosts` | List hosts (optional `query`). Pulls on every call. Returns the local cache if the pull fails |
-| `host` | One host + merged SSH settings + `ssh_command`. Pulls on every call. Returns the local cache if the pull fails |
+| `hosts` | List hosts (optional `query`). Pulls when the cache is older than 600 seconds. Returns the local cache if the pull fails |
+| `host` | One host + merged SSH settings + `ssh_command`. Pulls when the cache is older than 600 seconds. Returns the local cache if the pull fails |
 | `exec` | Run a remote command over SSH |
 | `files` | SFTP list / stat / read / write / get / put / mkdir / rm / rename |
 | `inventory` | `kind=groups\|identities\|keys\|snippets` |
 
-`hosts` and `host` pull on every call. If that pull fails, they return the
-local cache and set `stale` to true. `sync_error` is the pull error. A missing
-sign-in or vault password is still an error. `exec`, `files`, and `inventory`
-pull when the local cache is older than `TERMIUS_SYNC_TTL` and a vault password
-is available. Those three tools still fail the call when the pull fails.
+`hosts` and `host` pull when the local cache is older than 600 seconds.
+If that pull fails, they return the local cache and set `stale` to true.
+`sync_error` is the pull error. A missing sign-in or vault password is still
+an error. `exec`, `files`, and `inventory` pull when the local cache is older
+than `TERMIUS_SYNC_TTL` and a vault password is available. Those three tools
+still fail the call when the pull fails.
 
 `files` uses SFTP on the same SSH credentials as `exec`. `get` and `put` copy
 between the MCP host filesystem and the remote host. `read` and `write` move
@@ -259,9 +259,10 @@ The file key comes from the machine id and the user id. The file is not
 readable text, and a copy of it does not open on another machine or account.
 It does not hide anything from somebody who is already this user on this
 machine. Set `TERMIUS_SECRETS_KEY` to seal the file with that passphrase
-instead. A container should set it: a slim image has no `/etc/machine-id`,
-and Docker assigns a new MAC address on each `docker run`, so a machine-bound
-file will not open in the next container.
+instead. A container should set it. A slim image has no `/etc/machine-id`,
+and this program does not fall back to the MAC address. With neither a
+machine id nor `TERMIUS_SECRETS_KEY`, the file is only as private as the
+directory that holds it.
 
 On the first start that selects the file, an empty `secrets` file copies
 `vault_password`, `User.apikey`, `User.private_key`, `User.personal_v4_key`,
@@ -291,13 +292,39 @@ On first start, plaintext data from older versions moves into the secret
 store: the `vault` file and the secrets in `config` are moved, `storage` is
 encrypted, and `ssh_keys/` is deleted.
 
-If the secrets file cannot be decrypted, the server renames it to
-`secrets.bad-<UTC timestamp>` and starts with an empty store. `status` then
-reports `logged_in: false`. Sign in again. The renamed file is kept. Losing
-the store costs one cloud pull and one sign-in, not the vault itself. This
-happens when `/etc/machine-id` changes (a reinstall or a cloned image), when
-the file moves to another host, or when `TERMIUS_SECRETS_KEY` is missing for
-a file that was sealed with it.
+A secrets file with a broken format, or a file written by another version,
+is renamed to `secrets.bad-<UTC timestamp>`. The server then starts with an
+empty store. `status` reports `logged_in: false`. Sign in again. The renamed
+file is kept.
+
+The server does not start when `TERMIUS_SECRETS_KEY` is missing or does not
+match the passphrase that sealed the file. The file bytes stay as they are.
+Set the same passphrase and start again.
+
+The server also does not start when the file is bound to another machine id.
+The file bytes stay as they are. This happens when `/etc/machine-id` changes
+(a reinstall or a cloned image) or when the file moves to another host.
+Move `secrets` aside, start again, and sign in again. Re-enter the vault
+password. The process does not replace the file on its own. A new empty
+store would drop the saved login.
+
+## Roll back to PyPI 3.0.0
+
+You need the Termius account and the vault password. If that password exists
+only in `secrets` and you do not remember it, do not roll back.
+
+1. Stop every `termius-mcp` process. Run `pgrep -af termius` and confirm that no process remains.
+2. Back up the directory: `cp -a ~/.termius ~/.termius.bak-$(date +%Y%m%dT%H%M%S)`.
+3. If you kept a `~/.termius` backup from before this version, restore that backup. Then stop.
+4. If you have no backup, move `~/.termius/storage` and `~/.termius/secrets` aside. Do not delete them.
+5. Run `pip install termius-mcp==3.0.0`.
+6. Start the server, sign in again, and call `hosts`.
+
+3.0.0 cannot open a `storage` file from this version. It raises
+`ValueError: File not in a supported format` and does not start. After you
+move `storage` and `secrets`, 3.0.0 starts with no hosts and an empty apikey.
+A `[Secrets]` section in `config` does not affect 3.0.0. 3.0.0 writes the
+apikey back into `config` as plaintext.
 
 ## Encryption notes
 

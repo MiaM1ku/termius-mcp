@@ -143,8 +143,8 @@ def _count(runtime, name):
 def ensure_fresh(runtime, ttl=None):
     """Pull when signed in, a vault password exists, and the cache is stale.
 
-    ``ttl`` replaces ``TERMIUS_SYNC_TTL`` for this call. The host reads
-    pass ``0``, which pulls on every call.
+    ``ttl`` replaces ``TERMIUS_SYNC_TTL`` for this call. ``hosts`` and
+    ``host`` pass 600, so a second call inside that window does not pull.
     """
     require_signed_in(runtime.config)
     password = require_vault(runtime)

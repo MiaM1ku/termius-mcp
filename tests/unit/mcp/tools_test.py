@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from termius import __version__
 from termius.core.models.terminal import Host, Identity, SshConfig
 from termius.mcp.server import handle_rpc
 from termius.core.ssh_exec import SshExecError
@@ -54,14 +55,16 @@ class ToolsTest(unittest.TestCase):
             call_tool(self.runtime, 'hosts', {})
         self.assertEqual(caught.exception.code, 'vault_password_required')
 
-    def test_hosts_and_host_pull_on_every_call(self):
+    def test_hosts_and_host_use_a_short_ttl(self):
+        from termius.mcp.tools import HOST_PULL_TTL
         self._sign_in()
         with patch('termius.mcp.tools.ensure_fresh', return_value={}) as sync:
             call_tool(self.runtime, 'hosts', {})
             with self.assertRaises(ToolError):
                 call_tool(self.runtime, 'host', {'name': 'missing'})
         ttls = [call[1].get('ttl') for call in sync.call_args_list]
-        self.assertEqual(ttls, [0, 0])
+        self.assertEqual(ttls, [HOST_PULL_TTL, HOST_PULL_TTL])
+        self.assertEqual(HOST_PULL_TTL, 600)
 
     def test_hosts_serves_the_cache_when_the_pull_fails(self):
         self._sign_in()
@@ -301,7 +304,7 @@ class ToolsTest(unittest.TestCase):
         self.assertEqual(
             response['result']['serverInfo']['title'], 'Termius Cloud'
         )
-        self.assertEqual(response['result']['serverInfo']['version'], '3.0.0')
+        self.assertEqual(response['result']['serverInfo']['version'], __version__)
         self.assertEqual(
             response['result']['protocolVersion'], '2025-11-25'
         )

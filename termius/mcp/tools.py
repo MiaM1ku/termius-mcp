@@ -177,9 +177,10 @@ TOOLS = [
         'sync',
         'Sync Termius Vault',
         (
-            'Force a pull from Termius Cloud now. hosts and host already '
-            'pull on every call; use this for exec, files, and inventory, '
-            'or to pass and remember the vault password. Password comes '
+            'Force a pull from Termius Cloud now. hosts and host pull '
+            'when their cache is older than 600 seconds. Use sync for '
+            'exec, files, and inventory, or to pass and remember the '
+            'vault password. Password comes '
             'from the password argument, TERMIUS_VAULT_PASSWORD, or the '
             'secret store. Returns the new last_synced and the counts.'
         ),
@@ -203,8 +204,9 @@ TOOLS = [
         'List Hosts',
         (
             'List Termius hosts (id, label, address, group, username). '
-            'Pulls Termius Cloud on every call. If that pull fails, returns '
-            'the local cache and sets stale to true. Filter with query '
+            'Pulls Termius Cloud when the local cache is older than 600 '
+            'seconds. If that pull fails, returns the local cache and sets '
+            'stale to true. Filter with query '
             'against label, address, group, or username. Use host for full '
             'SSH settings. Use exec to run a command. Use files for SFTP.'
         ),
@@ -224,8 +226,9 @@ TOOLS = [
         'Host Details',
         (
             'One host plus merged SSH settings and a generated ssh(1) '
-            'command. Pulls Termius Cloud on every call. If that pull fails, '
-            'returns the local cache and sets stale to true. name is id or '
+            'command. Pulls Termius Cloud when the local cache is older '
+            'than 600 seconds. If that pull fails, returns the local cache '
+            'and sets stale to true. name is id or '
             'label. Does not return passwords or private keys.'
         ),
         _input_schema({
@@ -354,9 +357,9 @@ TOOLS = [
 ]
 
 
-# hosts and host report live inventory, so they pull on every call instead
-# of trusting a cache inside TERMIUS_SYNC_TTL.
-ALWAYS_PULL_TTL = 0
+# hosts and host use a short TTL so two calls close together share one pull.
+# This is not TERMIUS_SYNC_TTL. A failed pull still returns the local cache.
+HOST_PULL_TTL = 600
 
 
 def _bool_arg(arguments, key, default=True):
@@ -516,7 +519,7 @@ def handle_sync(runtime, arguments):
 
 
 def handle_hosts(runtime, arguments):
-    sync = _auto_sync(runtime, ttl=ALWAYS_PULL_TTL, allow_stale=True)
+    sync = _auto_sync(runtime, ttl=HOST_PULL_TTL, allow_stale=True)
     query = arguments.get('query') or ''
     rows = []
     for host in runtime.storage.get_all(Host):
@@ -534,7 +537,7 @@ def handle_hosts(runtime, arguments):
 
 
 def handle_host(runtime, arguments):
-    sync = _auto_sync(runtime, ttl=ALWAYS_PULL_TTL, allow_stale=True)
+    sync = _auto_sync(runtime, ttl=HOST_PULL_TTL, allow_stale=True)
     try:
         host = find_host(runtime.storage, arguments.get('name'))
     except HostLookupError as exc:
