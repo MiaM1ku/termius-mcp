@@ -4,7 +4,6 @@ import tempfile
 
 import six
 from unittest.mock import patch, Mock
-from pathlib2 import Path
 
 from termius.core.models.base import Model
 from termius.core.models.terminal import (
@@ -37,7 +36,6 @@ class ModelsTest(TestCase):
         self.addCleanup(tmp.cleanup)
         command = Mock()
         command.directory_path = tmp.name
-        command.config.ssh_key_dir_path = Path(tmp.name)
         storage = ApplicationStorage(command)
         with storage:
             saved_model = storage.save(model)

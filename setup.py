@@ -24,6 +24,7 @@ requires = [
     'pynacl>=1.5.0',
     'python-socketio>=5.11.0',
     'websocket-client>=1.6.0',
+    'keyring>=23.0',
 ]
 
 

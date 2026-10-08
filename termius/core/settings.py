@@ -6,6 +6,13 @@ from six.moves import configparser
 
 from .paths import directory_of
 
+# Options kept in the OS keychain instead of the config file.
+SECRET_OPTIONS = frozenset((
+    ('User', 'apikey'),
+    ('User', 'private_key'),
+    ('User', 'personal_v4_key'),
+))
+
 
 class Config(object):
     """Class for application config."""
@@ -13,10 +20,12 @@ class Config(object):
     paths = ['{application_directory}/config']
     write_mode = 'wb' if PY2 else 'w'
 
-    def __init__(self, app, **kwargs):
+    def __init__(self, app, secrets=None, **kwargs):
         """Create new config.
 
         ``app`` is a Runtime (or test double) with ``directory_path``.
+        ``secrets`` is a SecretStore for ``SECRET_OPTIONS``; without it
+        they stay in the config file.
         """
         assert self.paths, "It must have at least single config file's path."
         paths_kwargs = dict(
@@ -28,17 +37,25 @@ class Config(object):
         self.config.read([str(i) for i in self._paths])
         self.app = app
         self.command = app
+        self.secrets = secrets
+        self._move_secrets_to_keychain()
 
-    @property
-    def ssh_key_dir_path(self):
-        """Get path instance to Directory with applications ssh key."""
-        try:
-            ssh_keys_path = Path(self.config.get('SSH_keys', 'directory'))
-        except (configparser.NoSectionError, configparser.NoOptionError):
-            ssh_keys_path = Path(directory_of(self.app)) / 'ssh_keys'
-            self.set('SSH_keys', 'directory', str(ssh_keys_path))
+    def _secret_name(self, section, option):
+        if self.secrets is None or (section, option) not in SECRET_OPTIONS:
+            return None
+        return '{}.{}'.format(section, option)
+
+    def _move_secrets_to_keychain(self):
+        """Migrate plaintext secrets written by older versions."""
+        moved = False
+        for section, option in SECRET_OPTIONS:
+            name = self._secret_name(section, option)
+            if name and self.config.has_option(section, option):
+                self.secrets.set(name, self.config.get(section, option))
+                self.config.remove_option(section, option)
+                moved = True
+        if moved:
             self.write()
-        return ssh_keys_path
 
     @property
     def user_config_path(self):
@@ -51,31 +68,46 @@ class Config(object):
             if not i.is_file():
                 i.touch()
 
-    def get(self, *args, **kwargs):
+    def get(self, section, option):
         """Get option value from config."""
-        return self.config.get(*args, **kwargs)
+        name = self._secret_name(section, option)
+        if name is None:
+            return self.config.get(section, option)
+        value = self.secrets.get(name)
+        if value is None:
+            raise configparser.NoOptionError(option, section)
+        return value
 
-    def get_safe(self, *args, **kwargs):
+    def get_safe(self, section, option, default=None):
         """Get option value from config."""
-        default = kwargs.pop('default', None)
         try:
-            return self.config.get(*args, **kwargs)
+            return self.get(section, option)
         except (configparser.NoSectionError, configparser.NoOptionError):
             return default
 
     def set(self, section, option, value):
-        """Set option value to config."""
+        """Set option value to config. Secrets are stored immediately."""
+        name = self._secret_name(section, option)
+        if name is not None:
+            self.secrets.set(name, value)
+            return
         if not self.config.has_section(section):
             self.config.add_section(section)
         self.config.set(section, option, value)
 
     def remove(self, section, option):
         """Remove option value from config."""
-        if self.config.has_section(section):
+        name = self._secret_name(section, option)
+        if name is not None:
+            self.secrets.delete(name)
+        elif self.config.has_section(section):
             self.config.remove_option(section, option)
 
     def remove_section(self, section):
         """Remove section and all options from config."""
+        for secret_section, option in SECRET_OPTIONS:
+            if secret_section == section:
+                self.remove(section, option)
         if self.config.has_section(section):
             self.config.remove_section(section)
 

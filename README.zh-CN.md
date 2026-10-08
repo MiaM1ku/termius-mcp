@@ -117,7 +117,7 @@ Google：
 2. 输入保险库 / 账户密码。
 3. 如果开启了 2FA，输入 OTP。
 
-`TERMIUS_VAULT_PASSWORD` 提供保险库密码，并跳过提示。默认记住会把密码写入 `~/.termius/vault`，权限为 `0600`。传入 `--no-remember` 可跳过该文件。
+`TERMIUS_VAULT_PASSWORD` 提供保险库密码，并跳过提示。默认记住会把密码存入系统钥匙串。传入 `--no-remember` 可跳过这一步。
 
 查看会话：
 
@@ -135,10 +135,10 @@ termius logout
 
 服务器连接后，也可以使用这些工具。
 
-如果 `~/.termius/config` 已经有 DeviceToken（以前登录过）：
+如果以前登录过，钥匙串中已经有 DeviceToken：
 
 1. 调用 `status`。预期 `logged_in: true`，并且经常是 `vault_remembered: false`。
-2. 调用 `sync`，并传入 Termius 应用中的**保险库加密密码**（不是 Google 密码）。默认 `remember=true` 会把密码写入 `~/.termius/vault`，权限为 `0600`。
+2. 调用 `sync`，并传入 Termius 应用中的**保险库加密密码**（不是 Google 密码）。默认 `remember=true` 会把密码存入系统钥匙串。
 3. 调用 `hosts`。之后的读取会在缓存早于 `TERMIUS_SYNC_TTL` 时自动拉取。
 
 如果这台机器从未登录，并且你不使用 `termius login`：
@@ -173,14 +173,23 @@ termius logout
 
 ## 本地数据
 
-成功拉取后，解密后的清单位于：
+机密通过 [`keyring`](https://pypi.org/project/keyring/) 存入系统钥匙串：macOS 钥匙串、Windows 凭据管理器，或 Linux Secret Service（GNOME Keyring、KWallet）。条目的服务名为 `termius-mcp:<目录>`：
 
-- `~/.termius/config` — DeviceToken、salt、`last_synced`
-- `~/.termius/storage` — 主机、分组、身份、密钥、代码片段（明文 JSON）
-- `~/.termius/ssh_keys/` — 私钥文件
-- `~/.termius/vault` — 已记住的保险库密码（如果你选择了 `remember`）
+- `vault_password` — 已记住的保险库密码（如果你选择了 `remember`）
+- `User.apikey` — DeviceToken
+- `User.private_key`、`User.personal_v4_key` — 解开后的个人密钥
+- `storage_key` — 加密 `~/.termius/storage` 的密钥
 
-把该目录当作机密处理。
+`~/.termius/` 中的文件：
+
+- `config` — 用户名、salt、`last_synced`
+- `storage` — 主机、分组、身份、密钥、代码片段，用 `storage_key` 加密（Fernet），权限为 `0600`
+
+私钥只保存在 `storage` 中。`exec` 和 `files` 在内存中加载私钥，因此 `host` 返回的 `ssh_command` 不带 `-i` 选项。
+
+首次启动时，旧版本留下的明文数据会迁入钥匙串：移走 `vault` 文件和 `config` 中的机密，加密 `storage`，删除 `ssh_keys/`。
+
+没有 Secret Service 的无头 Linux 没有默认后端。请在该机器上运行 Secret Service，或把 `PYTHON_KEYRING_BACKEND` 设为其他 `keyring` 后端。
 
 ## 加密说明
 

@@ -8,7 +8,7 @@ from ..signals import (
     pre_delete_instance, post_delete_instance,
 )
 from .idgenerators import UUIDGenerator
-from .driver import PersistentDict
+from .driver import EncryptedDict, PersistentDict
 from ..exceptions import DoesNotExistException, TooManyEntriesException
 from ..paths import directory_of
 from .strategies import SaveStrategy, GetStrategy, SoftDeleteStrategy
@@ -52,17 +52,22 @@ class ApplicationStorage(object):
     logger = logging.getLogger(__name__)
 
     def __init__(self, app, save_strategy=None,
-                 get_strategy=None, delete_strategy=None, **kwargs):
+                 get_strategy=None, delete_strategy=None, cipher=None,
+                 **kwargs):
         """Create new storage for application.
 
         ``app`` is a Runtime (or test double) with ``directory_path``.
-        Signal handlers still receive it as ``command``.
+        Signal handlers still receive it as ``command``. With ``cipher``
+        the file is encrypted at rest.
         """
         paths_kwargs = dict(
             application_directory=directory_of(app), **kwargs
         )
         self._path = self.path.format(**paths_kwargs)
-        self.driver = PersistentDict(self._path)
+        if cipher is None:
+            self.driver = PersistentDict(self._path)
+        else:
+            self.driver = EncryptedDict(self._path, cipher)
         self.id_generator = UUIDGenerator(self)
         self.command = app
 

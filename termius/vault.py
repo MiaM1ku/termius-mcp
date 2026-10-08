@@ -1,36 +1,25 @@
 # -*- coding: utf-8 -*-
 """Resolve and remember the Termius vault encryption password."""
 import os
-import stat
 
 VAULT_ENV = 'TERMIUS_VAULT_PASSWORD'
-VAULT_FILENAME = 'vault'
+VAULT_SECRET = 'vault_password'
+LEGACY_VAULT_FILENAME = 'vault'
 
 
 class VaultPasswordRequired(Exception):
-    """No vault password in the environment or the remember file."""
-
-
-def vault_path(runtime):
-    """Return ``~/.termius/vault`` (or the runtime directory)."""
-    return runtime.directory_path / VAULT_FILENAME
+    """No vault password in the environment or the keychain."""
 
 
 def resolve(runtime):
     """Return the vault password or None.
 
-    Order: ``TERMIUS_VAULT_PASSWORD``, then the remember file.
+    Order: ``TERMIUS_VAULT_PASSWORD``, then the OS keychain.
     """
     env = os.environ.get(VAULT_ENV)
     if env:
         return env
-    path = vault_path(runtime)
-    if path.is_file():
-        text = path.read_text()
-        if text.endswith('\n'):
-            text = text[:-1]
-        return text or None
-    return None
+    return runtime.secrets.get(VAULT_SECRET) or None
 
 
 def require(runtime):
@@ -45,21 +34,30 @@ def require(runtime):
 
 
 def remember(runtime, password):
-    """Write the password to the remember file with mode 0600."""
+    """Store the password in the OS keychain."""
     if not password:
         raise VaultPasswordRequired('Cannot remember an empty vault password')
-    path = vault_path(runtime)
-    path.write_text(password)
-    path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    runtime.secrets.set(VAULT_SECRET, password)
 
 
 def forget(runtime):
-    """Delete the remember file if it exists."""
-    path = vault_path(runtime)
-    if path.is_file():
-        path.unlink()
+    """Delete the remembered password if it exists."""
+    runtime.secrets.delete(VAULT_SECRET)
 
 
 def is_available(runtime):
-    """True when env or the remember file can supply a password."""
+    """True when env or the keychain can supply a password."""
     return resolve(runtime) is not None
+
+
+def migrate_legacy_file(runtime):
+    """Move the plaintext remember file of older versions to the keychain."""
+    path = runtime.directory_path / LEGACY_VAULT_FILENAME
+    if not path.is_file():
+        return
+    password = path.read_text()
+    if password.endswith('\n'):
+        password = password[:-1]
+    if password:
+        remember(runtime, password)
+    path.unlink()

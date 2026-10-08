@@ -119,8 +119,8 @@ TOOLS = [
             'remember': {
                 'type': 'boolean',
                 'description': (
-                    'Store the vault password in ~/.termius/vault '
-                    '(mode 0600). Default true.'
+                    'Store the vault password in the OS keychain. '
+                    'Default true.'
                 ),
             },
         }),
@@ -149,7 +149,7 @@ TOOLS = [
             'remember': {
                 'type': 'boolean',
                 'description': (
-                    'Store the vault password in ~/.termius/vault. '
+                    'Store the vault password in the OS keychain. '
                     'Default true.'
                 ),
             },
@@ -171,7 +171,7 @@ TOOLS = [
         'Sync Termius Vault',
         (
             'Force a pull from Termius Cloud now. Password comes from the '
-            'password argument, TERMIUS_VAULT_PASSWORD, or ~/.termius/vault. '
+            'password argument, TERMIUS_VAULT_PASSWORD, or the OS keychain. '
             'Use this when status.stale is true and auto-sync failed, or '
             'when you just changed hosts in the Termius app.'
         ),
@@ -183,7 +183,7 @@ TOOLS = [
             'remember': {
                 'type': 'boolean',
                 'description': (
-                    'Store password in ~/.termius/vault when supplied. '
+                    'Store password in the OS keychain when supplied. '
                     'Default true.'
                 ),
             },
@@ -502,10 +502,7 @@ def handle_host(runtime, arguments):
     ssh_config['agent_forwarding'] = (
         AccountManager(runtime.config).get_settings().get('agent_forwarding')
     )
-    key_path = ssh_key.file_path(runtime) if ssh_key else None
-    command = render_command(
-        ssh_config, host.address, key_path
-    )
+    command = render_command(ssh_config, host.address)
     snippet = ssh_config.startup_snippet
     data = {
         'id': host.id,
@@ -516,7 +513,6 @@ def handle_host(runtime, arguments):
         'username': identity.username if identity else None,
         'has_password': bool(identity and identity.password),
         'ssh_key': ssh_key.label if ssh_key else None,
-        'ssh_key_path': str(key_path) if key_path else None,
         'strict_host_key_check': ssh_config.strict_host_key_check,
         'use_ssh_key': ssh_config.use_ssh_key,
         'timeout': ssh_config.timeout,

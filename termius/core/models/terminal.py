@@ -37,12 +37,6 @@ class SshKey(Model):
     }
     set_name = 'sshkeycrypt_set'
     crypto_fields = {'label', 'private_key', 'public_key', 'passphrase'}
-    file_mode = 0o600
-
-    def file_path(self, command):
-        """Return path object to private key file."""
-        ssh_keys_path = command.config.ssh_key_dir_path
-        return ssh_keys_path / self.label
 
 
 class Identity(Model):

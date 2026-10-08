@@ -1,16 +1,14 @@
 # -*- coding: utf-8 -*-
 """Render an ssh(1) command line from a merged SshConfig."""
-from shlex import quote
 
 
-def render_command(ssh_config, address, ssh_key_file, pfrule=None):
+def render_command(ssh_config, address, pfrule=None):
     """Generate an ssh command call."""
     identity = ssh_config.get('identity') or {}
     username = identity.get('username', '') or ''
     parts = [
         'ssh',
         _format_port(ssh_config.get('port')),
-        _format_identity_file(ssh_key_file),
         _format_pfrule(pfrule),
         _bool_opt('StrictHostKeyChecking', ssh_config.get('strict_host_key_check')),
         _bool_opt('IdentitiesOnly', ssh_config.get('use_ssh_key')),
@@ -26,12 +24,6 @@ def _ssh_auth(username, address):
     if username:
         return '{}@{}'.format(username, address)
     return '{}'.format(address)
-
-
-def _format_identity_file(ssh_key_file):
-    if ssh_key_file:
-        return '-i {}'.format(quote(str(ssh_key_file)))
-    return ''
 
 
 def _format_port(port):

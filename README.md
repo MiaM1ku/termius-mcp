@@ -130,8 +130,8 @@ Email:
 3. If 2FA is on, enter the OTP.
 
 `TERMIUS_VAULT_PASSWORD` supplies the vault password and skips the prompt.
-Default remember writes `~/.termius/vault` mode `0600`. Pass `--no-remember`
-to skip that file.
+Default remember stores the vault password in the OS keychain. Pass
+`--no-remember` to skip that.
 
 Check the session:
 
@@ -149,12 +149,12 @@ termius logout
 
 After the server is connected, you can also use the tools.
 
-If `~/.termius/config` already has a DeviceToken (a previous login):
+If a previous login already stored a DeviceToken:
 
 1. Call `status`. Expect `logged_in: true` and often `vault_remembered: false`.
 2. Call `sync` with the **vault encryption password** from the Termius app
-   (not the Google password). Default `remember=true` writes `~/.termius/vault`
-   mode `0600`.
+   (not the Google password). Default `remember=true` stores it in the OS
+   keychain.
 3. Call `hosts`. Later reads auto-pull when the cache is older than
    `TERMIUS_SYNC_TTL`.
 
@@ -198,14 +198,32 @@ up to 50 MiB. `list` defaults `path` to the SSH login directory.
 
 ## Local data
 
-After a successful pull, decrypted inventory lives in:
+Secrets live in the OS keychain through
+[`keyring`](https://pypi.org/project/keyring/): the macOS Keychain, the
+Windows Credential Manager, or the Linux Secret Service (GNOME Keyring,
+KWallet). Entries use the service name `termius-mcp:<directory>`:
 
-- `~/.termius/config` — DeviceToken, salts, `last_synced`
-- `~/.termius/storage` — hosts, groups, identities, keys, snippets (plaintext JSON)
-- `~/.termius/ssh_keys/` — private key files
-- `~/.termius/vault` — remembered vault password, if you chose `remember`
+- `vault_password` — remembered vault password, if you chose `remember`
+- `User.apikey` — DeviceToken
+- `User.private_key`, `User.personal_v4_key` — unwrapped personal keys
+- `storage_key` — key that encrypts `~/.termius/storage`
 
-Treat that directory as secret.
+Files in `~/.termius/`:
+
+- `config` — username, salts, `last_synced`
+- `storage` — hosts, groups, identities, keys, snippets, encrypted with
+  `storage_key` (Fernet), mode `0600`
+
+Private keys stay inside `storage`. `exec` and `files` load them in memory,
+so `ssh_command` from `host` has no `-i` option.
+
+On first start, plaintext data from older versions moves into the
+keychain: the `vault` file and the secrets in `config` are moved, `storage`
+is encrypted, and `ssh_keys/` is deleted.
+
+Headless Linux without a Secret Service has no default backend. Run a
+Secret Service there, or set `PYTHON_KEYRING_BACKEND` to another `keyring`
+backend.
 
 ## Encryption notes
 

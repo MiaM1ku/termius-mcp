@@ -4,6 +4,7 @@
 Driver means "dict converter to stream".
 """
 import abc
+import logging
 import os
 from collections import OrderedDict
 from contextlib import contextmanager
@@ -14,6 +15,7 @@ import json
 import csv
 import shutil
 import six
+from cryptography.fernet import InvalidToken
 
 
 @six.add_metaclass(abc.ABCMeta)
@@ -112,8 +114,12 @@ class PersistentDict(OrderedDict):
         self.read_mode = 'rb' if self._format == 'pickle' else 'r'
         super(PersistentDict, self).__init__(*args, **kwds)
         if flag != 'n' and os.access(filename, os.R_OK):
-            with open(filename, self.read_mode) as fileobj:
-                self.load(fileobj)
+            self.read_file()
+
+    def read_file(self):
+        """Populate self from the file."""
+        with open(self.filename, self.read_mode) as fileobj:
+            self.load(fileobj)
 
     def sync(self):
         """Write dict to disk."""
@@ -150,3 +156,46 @@ class PersistentDict(OrderedDict):
             except Exception:  # pylint: disable=broad-except
                 continue
         raise ValueError('File not in a supported format')
+
+
+class EncryptedDict(PersistentDict):
+    """PersistentDict stored as one encrypted JSON token, mode 0600.
+
+    ``cipher`` is a ``cryptography.fernet.Fernet``.
+    """
+
+    logger = logging.getLogger(__name__)
+
+    def __init__(self, filename, cipher):
+        """Open the file; re-encrypt plaintext JSON from older versions."""
+        self.cipher = cipher
+        self._found_plaintext = False
+        super(EncryptedDict, self).__init__(filename, mode=0o600)
+        self.write_mode = 'wb'
+        if self._found_plaintext:
+            self.sync()
+
+    def read_file(self):
+        """Decrypt the file into self."""
+        with open(self.filename, 'rb') as fileobj:
+            data = fileobj.read()
+        if not data:
+            return
+        try:
+            self.update(json.loads(self.cipher.decrypt(data)))
+            return
+        except InvalidToken:
+            pass
+        try:
+            self.update(json.loads(data))
+            self._found_plaintext = True
+        except ValueError:
+            self.logger.warning(
+                'Cannot decrypt %s; starting empty until the next pull.',
+                self.filename,
+            )
+
+    def dump(self, fileobj):
+        """Write self to fileobj as an encrypted token."""
+        payload = json.dumps(self, separators=(',', ':')).encode('utf-8')
+        fileobj.write(self.cipher.encrypt(payload))
