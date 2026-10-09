@@ -87,6 +87,24 @@ Restart the MCP client after you edit the config. `connecting [stdio]` is the
 handshake. It becomes connected when `initialize` succeeds. Sign in with
 `termius login` before that, or use the login tools after connect.
 
+Timeouts and cancellation:
+
+- The `timeout` argument of `exec` and `files` caps the whole call, connect
+  included. The default is 60 seconds.
+- When `exec` times out, the server closes the SSH connection. The result
+  has `timed_out: true`, `exit_code: null`, and the output read so far. A
+  remote process that does not write output can keep running.
+- When `files` times out, the call fails. Pass a larger `timeout` for a big
+  `get` or `put`.
+- Each tool call runs in its own thread. A long `exec` does not block
+  `status` or other calls.
+- When the client sends `notifications/cancelled`, the server closes the SSH
+  connection of that call and sends no response.
+- Set the client tool timeout higher than the largest `timeout` that you
+  pass. Otherwise the client cancels the call first. For example, Codex
+  `tool_timeout_sec = 60.0` cancels an `exec` with `timeout: 180` after 60
+  seconds.
+
 Optional environment variables:
 
 | Variable | Purpose |

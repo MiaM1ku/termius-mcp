@@ -2,6 +2,7 @@
 """Process-wide Termius paths, config, and local storage."""
 from os.path import expanduser
 import shutil
+import threading
 
 from pathlib2 import Path
 
@@ -18,6 +19,9 @@ class Runtime(object):
     """Application context used by MCP tools. Not a CLI app."""
 
     def __init__(self, directory_path=None):
+        # MCP tool calls run in worker threads. Hold this lock for any
+        # access to config, secrets, storage, or Cloud sync.
+        self.lock = threading.RLock()
         if directory_path is None:
             directory_path = expanduser('~/.termius/')
         self.directory_path = Path(directory_path)

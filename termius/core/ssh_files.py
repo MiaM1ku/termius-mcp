@@ -6,7 +6,10 @@ import os
 import stat
 
 from .exceptions import TermiusException
-from .ssh_exec import close_quiet, connect_host
+from .ssh_control import (
+    Deadline, Watchdog, check_cancel, close_quiet,
+)
+from .ssh_exec import connect_host
 
 MAX_CONTENT = 200000
 MAX_TRANSFER = 50 * 1024 * 1024
@@ -311,25 +314,48 @@ def _run_sftp(client, handler, path, extra):
         close_quiet(sftp)
 
 
-def _with_host_meta(payload, host, username, action):
-    payload['host'] = host.label or host.address
-    payload['address'] = host.address
+def _with_host_meta(payload, target, username, action):
+    payload['host'] = target.label
+    payload['address'] = target.address
     payload['username'] = username
     payload['action'] = action
     payload.setdefault('ok', True)
     return payload
 
 
-def run_file_action(host, ssh_config, action, path, timeout=60, extra=None):
-    """Run one SFTP action on ``host`` using merged ssh_config credentials."""
+def run_file_action(target, action, path, timeout=60, extra=None,
+                    cancel=None):
+    """Run one SFTP action on ``target``.
+
+    ``timeout`` caps the whole call: connect plus transfer. When it
+    passes, the connection is closed and SshFileError is raised.
+    ``cancel`` is an optional CancelToken; a cancel closes the
+    connection and raises SshCancelled.
+    """
     handler = ACTIONS.get(action)
     if handler is None:
         raise SshFileError(
             'Unknown files action: {}'.format(action)
         )
-    client, username = connect_host(host, ssh_config, timeout=timeout)
+    deadline = Deadline(timeout)
+    client, username = connect_host(target, timeout=timeout, cancel=cancel)
+    key = cancel.register(client) if cancel is not None else None
+    watchdog = Watchdog(client, deadline.remaining())
     try:
         payload = _run_sftp(client, handler, path, extra or {})
+    except Exception:
+        check_cancel(cancel)
+        if watchdog.fired:
+            raise SshFileError(
+                '{} {} on {} timed out after {} s. Pass a larger timeout '
+                'for big transfers.'.format(
+                    action, path, target.label, timeout,
+                )
+            )
+        raise
     finally:
+        watchdog.stop()
+        if cancel is not None:
+            cancel.unregister(key)
         close_quiet(client)
-    return _with_host_meta(payload, host, username, action)
+    return _with_host_meta(payload, target, username, action)

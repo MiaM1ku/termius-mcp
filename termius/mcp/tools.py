@@ -8,7 +8,8 @@ from ..account.managers import AccountManager
 from ..core.exceptions import ApiError, NotSignedIn
 from ..core.models.terminal import Group, Host, Identity, Snippet, SshKey
 from ..core.ssh_command import render_command
-from ..core.ssh_exec import SshExecError, run_host_command
+from ..core.ssh_control import SshCancelled
+from ..core.ssh_exec import SshExecError, run_host_command, ssh_target
 from ..core.ssh_files import ACTIONS as FILE_ACTIONS
 from ..core.ssh_files import SshFileError, run_file_action
 from ..core.ssh_merge import HostLookupError, find_host, get_merged_ssh_config
@@ -245,7 +246,11 @@ TOOLS = [
         (
             'Run a shell command on a Termius host over SSH. Required: '
             'name (host numeric id or exact label from hosts) and '
-            'command; optional timeout in seconds. Uses the '
+            'command; optional timeout in seconds caps the whole call '
+            '(connect plus run, default 60). On timeout the connection is '
+            'closed and the result has timed_out true, exit_code null, and '
+            'the output so far; the remote process may keep running. Uses '
+            'the '
             'username, password, or key from the vault. Auto-pulls a stale '
             'vault first (TERMIUS_SYNC_TTL). Returns stdout, stderr, and '
             'exit_code. Never echo '
@@ -262,7 +267,9 @@ TOOLS = [
             },
             'timeout': {
                 'type': 'integer',
-                'description': 'Seconds to wait (default 60)',
+                'description': (
+                    'Total seconds for connect plus run (default 60)'
+                ),
             },
         }, ['name', 'command']),
         _DESTRUCTIVE,
@@ -284,7 +291,9 @@ TOOLS = [
             'local_path on this machine; put copies local_path -> remote; '
             'mkdir creates a directory (recursive=true creates parents); '
             'rm deletes a file or empty dir (recursive=true deletes a '
-            'tree); rename moves a remote path (needs dest). Prefer this '
+            'tree); rename moves a remote path (needs dest). timeout caps '
+            'connect plus transfer (default 60); raise it for big get or '
+            'put. Prefer this '
             'over exec for copy and edit. Never echo secrets from file '
             'content unless the user asked.'
         ),
@@ -332,7 +341,9 @@ TOOLS = [
             },
             'timeout': {
                 'type': 'integer',
-                'description': 'Seconds to wait (default 60)',
+                'description': (
+                    'Total seconds for connect plus transfer (default 60)'
+                ),
             },
         }, ['name', 'action']),
         _DESTRUCTIVE,
@@ -576,23 +587,47 @@ def handle_host(runtime, arguments):
     return data, summary
 
 
-def handle_exec(runtime, arguments):
+def _ssh_target_for(runtime, name):
+    """Sync, find the host, and resolve its credentials.
+
+    The caller must hold ``runtime.lock``.
+    """
     _auto_sync(runtime)
+    host = _lookup_host(runtime, name)
+    try:
+        return ssh_target(host, get_merged_ssh_config(host))
+    except SshExecError as exc:
+        raise ToolError(str(exc), code='ssh_failed')
+
+
+def _cancelled_error():
+    return ToolError('Cancelled by the client', code='cancelled')
+
+
+def handle_exec(runtime, arguments, cancel=None):
     command = arguments.get('command')
     if not command or not str(command).strip():
         raise ToolError('command is required', code='invalid_argument')
-    try:
-        host = find_host(runtime.storage, arguments.get('name'))
-    except HostLookupError as exc:
-        raise ToolError(str(exc), code='host_not_found')
-    ssh_config = get_merged_ssh_config(host)
     timeout = _int_timeout(arguments.get('timeout'))
+    with runtime.lock:
+        target = _ssh_target_for(runtime, arguments.get('name'))
+    # The SSH work runs without the lock, so status and other tools stay
+    # responsive while a long command runs.
     try:
         result = run_host_command(
-            host, ssh_config, command, timeout=timeout,
+            target, command, timeout=timeout, cancel=cancel,
         )
+    except SshCancelled:
+        raise _cancelled_error()
     except SshExecError as exc:
         raise ToolError(str(exc), code='ssh_failed')
+    if result.get('timed_out'):
+        result['ok'] = False
+        summary = (
+            'timed out after {} s on {}; the output so far is returned. '
+            'The remote process may still be running.'
+        ).format(timeout, result.get('host'))
+        return result, summary
     result['ok'] = result.get('exit_code') == 0
     summary = 'exit {} on {}.'.format(
         result.get('exit_code'), result.get('host')
@@ -604,9 +639,12 @@ def _int_timeout(value):
     if value is None:
         return 60
     try:
-        return int(value)
+        timeout = int(value)
     except (TypeError, ValueError):
         raise ToolError('timeout must be an integer', code='invalid_argument')
+    if timeout < 1:
+        raise ToolError('timeout must be at least 1', code='invalid_argument')
+    return timeout
 
 
 def _lookup_host(runtime, name):
@@ -647,13 +685,14 @@ def _files_extra(arguments):
     }
 
 
-def _invoke_files(host, action, path, timeout, arguments):
-    ssh_config = get_merged_ssh_config(host)
+def _invoke_files(target, action, path, timeout, arguments, cancel=None):
     try:
         result = run_file_action(
-            host, ssh_config, action, path,
-            timeout=timeout, extra=_files_extra(arguments),
+            target, action, path,
+            timeout=timeout, extra=_files_extra(arguments), cancel=cancel,
         )
+    except SshCancelled:
+        raise _cancelled_error()
     except SshFileError as exc:
         raise ToolError(str(exc), code='file_failed')
     except SshExecError as exc:
@@ -689,11 +728,11 @@ def _files_summary(result):
     return '{} {} on {}.'.format(action, path, host)
 
 
-def handle_files(runtime, arguments):
-    _auto_sync(runtime)
+def handle_files(runtime, arguments, cancel=None):
     action, path, timeout = _files_args(arguments)
-    host = _lookup_host(runtime, arguments.get('name'))
-    result = _invoke_files(host, action, path, timeout, arguments)
+    with runtime.lock:
+        target = _ssh_target_for(runtime, arguments.get('name'))
+    result = _invoke_files(target, action, path, timeout, arguments, cancel)
     return result, _files_summary(result)
 
 
@@ -758,9 +797,25 @@ HANDLERS = {
 }
 
 
-def call_tool(runtime, name, arguments):
-    """Dispatch a tool. Returns (data, summary) or raises ToolError."""
+# These handlers take runtime.lock only around storage and sync, and accept
+# a cancel token for the SSH work.
+SSH_HANDLERS = frozenset(['exec', 'files'])
+
+
+def call_tool(runtime, name, arguments, cancel=None):
+    """Dispatch a tool. Returns (data, summary) or raises ToolError.
+
+    Safe to call from several threads. ``cancel`` is an optional
+    CancelToken from the MCP server.
+    """
     handler = HANDLERS.get(name)
     if handler is None:
         raise ToolError('Unknown tool: {}'.format(name), code='unknown_tool')
-    return handler(runtime, arguments or {})
+    if cancel is not None and cancel.cancelled:
+        raise _cancelled_error()
+    if name in SSH_HANDLERS:
+        return handler(runtime, arguments or {}, cancel=cancel)
+    with runtime.lock:
+        if cancel is not None and cancel.cancelled:
+            raise _cancelled_error()
+        return handler(runtime, arguments or {})

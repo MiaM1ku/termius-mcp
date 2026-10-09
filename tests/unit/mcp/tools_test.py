@@ -169,6 +169,70 @@ class ToolsTest(unittest.TestCase):
         self.assertEqual(data['stdout'], 'Linux\n')
         self.assertIn('exit 0', summary)
 
+    def test_exec_timeout_shape(self):
+        self._sign_in()
+        saved = self._add_host()
+        fake = {
+            'host': 'web', 'address': '10.0.0.1', 'username': 'root',
+            'command': 'apk add x', 'exit_code': None, 'stdout': 'fetch\n',
+            'stderr': '', 'truncated': False, 'timed_out': True,
+            'timeout': 5,
+        }
+        with patch('termius.mcp.tools.ensure_fresh', return_value={}):
+            with patch(
+                'termius.mcp.tools.run_host_command', return_value=dict(fake)
+            ):
+                data, summary = call_tool(
+                    self.runtime, 'exec',
+                    {'name': saved.label, 'command': 'apk add x',
+                     'timeout': 5},
+                )
+        self.assertFalse(data['ok'])
+        self.assertTrue(data['timed_out'])
+        self.assertEqual(data['stdout'], 'fetch\n')
+        self.assertIn('timed out after 5 s', summary)
+
+    def test_exec_rejects_timeout_below_one(self):
+        with self.assertRaises(ToolError) as caught:
+            call_tool(
+                self.runtime, 'exec',
+                {'name': 'web', 'command': 'true', 'timeout': 0},
+            )
+        self.assertEqual(caught.exception.code, 'invalid_argument')
+
+    def test_exec_releases_the_runtime_lock_during_ssh(self):
+        import threading
+        self._sign_in()
+        saved = self._add_host()
+        acquired = []
+
+        def fake_run(target, command, timeout=60, cancel=None):
+            def probe():
+                got = self.runtime.lock.acquire(timeout=1)
+                acquired.append(got)
+                if got:
+                    self.runtime.lock.release()
+            thread = threading.Thread(target=probe)
+            thread.start()
+            thread.join()
+            return {'host': target.label, 'exit_code': 0}
+
+        with patch('termius.mcp.tools.ensure_fresh', return_value={}):
+            with patch('termius.mcp.tools.run_host_command', fake_run):
+                call_tool(
+                    self.runtime, 'exec',
+                    {'name': saved.label, 'command': 'true'},
+                )
+        self.assertEqual(acquired, [True])
+
+    def test_cancelled_token_stops_a_queued_call(self):
+        from termius.core.ssh_control import CancelToken
+        token = CancelToken()
+        token.cancel()
+        with self.assertRaises(ToolError) as caught:
+            call_tool(self.runtime, 'status', {}, cancel=token)
+        self.assertEqual(caught.exception.code, 'cancelled')
+
     def test_files_shape(self):
         self._sign_in()
         saved = self._add_host()

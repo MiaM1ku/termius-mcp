@@ -261,7 +261,7 @@ class SshFilesTest(unittest.TestCase):
 
     def test_run_file_action_unknown(self):
         with self.assertRaises(SshFileError):
-            run_file_action(FakeHost(), None, 'chmod', '/tmp')
+            run_file_action(FakeHost(), 'chmod', '/tmp')
 
     def test_run_file_action_list(self):
         client = FakeClient(self.sftp)
@@ -270,7 +270,7 @@ class SshFilesTest(unittest.TestCase):
             return_value=(client, 'root'),
         ):
             data = run_file_action(
-                FakeHost(), None, 'list', '~', extra={},
+                FakeHost(), 'list', '~', extra={},
             )
         self.assertTrue(data['ok'])
         self.assertEqual(data['username'], 'root')

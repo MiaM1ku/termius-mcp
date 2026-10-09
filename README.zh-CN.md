@@ -78,6 +78,15 @@ Pi / OMP（`~/.omp/agent/mcp.json`）：
 
 编辑配置后重启 MCP 客户端。`connecting [stdio]` 表示握手。`initialize` 成功后进入已连接状态。在此之前用 `termius login` 登录，或在连接后使用登录工具。
 
+超时和取消：
+
+- `exec` 和 `files` 的 `timeout` 参数限制整个调用的时长，包括建立连接。默认 60 秒。
+- `exec` 超时后，服务器关闭 SSH 连接。结果里 `timed_out` 为 `true`，`exit_code` 为 `null`，并带上已经读到的输出。不再输出的远程进程可能继续运行。
+- `files` 超时后，调用失败。大文件 `get` 或 `put` 要传更大的 `timeout`。
+- 每个工具调用在单独的线程里运行。长时间的 `exec` 不会阻塞 `status` 和其他调用。
+- 客户端发送 `notifications/cancelled` 后，服务器关闭这个调用的 SSH 连接，并且不发送响应。
+- 客户端的工具超时要大于你传的最大 `timeout`，否则客户端会先取消调用。例如 Codex 的 `tool_timeout_sec = 60.0` 会在 60 秒时取消 `timeout: 180` 的 `exec`。
+
 可选环境变量：
 
 | 变量 | 用途 |
